@@ -1,0 +1,90 @@
+export type WorkspaceView = 'board' | 'list' | 'timeline' | 'roadmap';
+
+export type Priority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
+
+export type Subtask = {
+  id: string;
+  title: string;
+  completed: boolean;
+};
+
+export type WorkItem = {
+  id: string;
+  projectId: string;
+  type: 'task';
+  title: string;
+  description: string;
+  priority: Priority;
+  startDate?: string;
+  dueDate?: string;
+  labels: string[];
+  assignee?: string;
+  subtasks: Subtask[];
+  createdAt: string;
+  updatedAt: string;
+  moduleData: {
+    kanban: {
+      columnId: string;
+      rank: number;
+    };
+    [moduleId: string]: unknown;
+  };
+};
+
+export type Project = {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  targetDate?: string;
+  createdAt: string;
+  archived: boolean;
+};
+
+export type KanbanColumn = {
+  id: string;
+  title: string;
+  color: string;
+  limit?: number;
+};
+
+export type KanbanProjectSettings = {
+  columns: KanbanColumn[];
+};
+
+export type KanbanModule = {
+  version: 1;
+  projects: Record<string, KanbanProjectSettings>;
+};
+
+export type WorkspaceDocument = {
+  schemaVersion: 1;
+  workspace: {
+    id: string;
+    name: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  projects: Project[];
+  items: Record<string, WorkItem>;
+  modules: {
+    kanban: KanbanModule;
+    [moduleId: string]: unknown;
+  };
+  preferences: {
+    activeProjectId: string;
+  };
+};
+
+export type WorkspaceAction =
+  | { type: 'load'; document: WorkspaceDocument }
+  | { type: 'selectProject'; projectId: string }
+  | { type: 'addProject'; project: Project; settings: KanbanProjectSettings }
+  | { type: 'updateProject'; projectId: string; changes: Partial<Pick<Project, 'name' | 'description' | 'color' | 'targetDate'>> }
+  | { type: 'addItem'; item: WorkItem }
+  | { type: 'updateItem'; itemId: string; changes: Partial<Omit<WorkItem, 'id' | 'projectId' | 'createdAt'>> }
+  | { type: 'deleteItem'; itemId: string }
+  | { type: 'moveItem'; itemId: string; columnId: string; index: number }
+  | { type: 'addColumn'; projectId: string; column: KanbanColumn }
+  | { type: 'updateColumn'; projectId: string; columnId: string; changes: Partial<KanbanColumn> }
+  | { type: 'deleteColumn'; projectId: string; columnId: string; moveToColumnId: string };

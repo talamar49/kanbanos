@@ -1,0 +1,50 @@
+stages:
+  - test
+  - package
+
+variables:
+  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
+
+cache:
+  key:
+    files:
+      - package-lock.json
+  paths:
+    - .npm/
+
+test:
+  image: node:22-bookworm
+  stage: test
+  script:
+    - npm ci --prefer-offline
+    - npm test
+    - npm run build
+
+package:linux:
+  image: electronuserland/builder:22
+  stage: package
+  needs:
+    - test
+  script:
+    - npm ci --prefer-offline
+    - npm run dist:linux
+  artifacts:
+    name: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA-linux"
+    expire_in: 1 week
+    paths:
+      - release/*.AppImage
+      - release/*.deb
+
+package:windows:
+  image: electronuserland/builder:22-wine
+  stage: package
+  needs:
+    - test
+  script:
+    - npm ci --prefer-offline
+    - npm run dist:win
+  artifacts:
+    name: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA-windows"
+    expire_in: 1 week
+    paths:
+      - release/*.exe
