@@ -22,6 +22,7 @@ import {
   File,
   Folder,
   GitBranch,
+  HardDrive,
   GripVertical,
   ListTodo,
   Maximize2,
@@ -91,9 +92,10 @@ type Props = {
   onSave: () => void;
   onOpenTask: (item: WorkItem) => void;
   onCreateTask: (point: CanvasPoint) => void;
-  onAddFiles: (point: CanvasPoint, kind: 'files' | 'folders') => void;
+  onAddFiles: (point: CanvasPoint, kind: 'files' | 'folders' | 'references') => void;
   onPreviewAttachment: (attachment: WorkspaceAttachment) => void;
   onOpenAttachment: (attachment: WorkspaceAttachment) => void;
+  mobile?: boolean;
 };
 
 const MIN_ZOOM = 0.2;
@@ -518,6 +520,7 @@ export function CanvasView({
   onAddFiles,
   onPreviewAttachment,
   onOpenAttachment,
+  mobile = false,
 }: Props) {
   const { locale, t } = useI18n();
   const canvasProject = document.modules.canvas.projects[project.id] ?? EMPTY_CANVAS;
@@ -1084,12 +1087,13 @@ export function CanvasView({
             <div className="canvas-import-actions">
               <button onClick={() => { onAddFiles(centerWorld(276, 138), 'files'); setLibraryPanel(null); }}><File size={17} /><span><strong>{t('Import files')}</strong><small>{t('Choose from this device')}</small></span></button>
               <button onClick={() => { onAddFiles(centerWorld(276, 138), 'folders'); setLibraryPanel(null); }}><Folder size={17} /><span><strong>{t('Import folder')}</strong><small>{t('Keep a folder together')}</small></span></button>
+              {!mobile && <button onClick={() => { onAddFiles(centerWorld(276, 138), 'references'); setLibraryPanel(null); }}><HardDrive size={17} /><span><strong>{t('Add local file reference')}</strong><small>{t('Keep the path, not the file')}</small></span></button>}
             </div>
             {attachments.length > 0 && <p className="canvas-library-label">{t('Already in this workspace')}</p>}
             <div className="canvas-library-list">
               {attachments.map((attachment) => {
                 const alreadyPlaced = fileNodes.has(attachment.id);
-                return <button key={attachment.id} onClick={() => addFileNode(attachment)}>{attachment.kind === 'folder' ? <Folder size={17} /> : <File size={17} />}<span><strong><bdi>{attachment.name}</bdi></strong><small>{formatFileSize(attachment.sizeBytes, locale)}</small></span>{alreadyPlaced && <em><Check size={12} /> {t('On canvas')}</em>}</button>;
+                return <button key={attachment.id} onClick={() => addFileNode(attachment)}>{attachment.kind === 'folder' ? <Folder size={17} /> : attachment.kind === 'reference' ? <HardDrive size={17} /> : <File size={17} />}<span><strong><bdi>{attachment.name}</bdi></strong><small>{attachment.kind === 'reference' ? t('Not backed up') : formatFileSize(attachment.sizeBytes, locale)}</small></span>{alreadyPlaced && <em><Check size={12} /> {t('On canvas')}</em>}</button>;
               })}
             </div>
           </div>
@@ -1235,8 +1239,8 @@ export function CanvasView({
 
                 {node.type === 'file' && attachment && (
                   <div className="canvas-file-content">
-                    <span className={`canvas-file-icon ${attachment.kind}`}>{attachment.kind === 'folder' ? <Folder size={26} /> : <File size={26} />}</span>
-                    <div><small>{t(attachment.kind === 'folder' ? 'Folder' : 'File')}</small><h3><bdi>{attachment.name}</bdi></h3><p>{formatFileSize(attachment.sizeBytes, locale)}{attachment.kind === 'folder' ? ` · ${t('{{count}} files', { count: attachment.fileCount })}` : ''}</p></div>
+                    <span className={`canvas-file-icon ${attachment.kind}`}>{attachment.kind === 'folder' ? <Folder size={26} /> : attachment.kind === 'reference' ? <HardDrive size={26} /> : <File size={26} />}</span>
+                    <div><small>{t(attachment.kind === 'folder' ? 'Folder' : attachment.kind === 'reference' ? 'Local file reference' : 'File')}</small><h3><bdi>{attachment.name}</bdi></h3><p>{attachment.kind === 'reference' ? t('Not backed up') : formatFileSize(attachment.sizeBytes, locale)}{attachment.kind === 'folder' ? ` · ${t('{{count}} files', { count: attachment.fileCount })}` : ''}</p></div>
                     <button className="canvas-node-interactive" onClick={() => onOpenAttachment(attachment)} aria-label={t('Open {{name}}', { name: attachment.name })}><ExternalLink size={16} /></button>
                   </div>
                 )}

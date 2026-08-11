@@ -35,6 +35,7 @@ describe('mobile distribution', () => {
       webDir: 'dist',
       plugins: {
         CapacitorHttp: { enabled: false },
+        Keyboard: { resize: 'body', resizeOnFullScreen: true },
         SplashScreen: { launchAutoHide: false },
       },
     });

@@ -18,7 +18,9 @@ const DATA_DIRECTORY = '.kanbanos';
 const WORKSPACE_FILE = `${DATA_DIRECTORY}/workspace.json`;
 const ATTACHMENTS_DIRECTORY = `${DATA_DIRECTORY}/content/attachments`;
 const MAX_IMPORT_BYTES = 300 * 1024 * 1024;
+const MAX_SYNCED_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_IMPORT_FILES = 10_000;
+const ATTACHMENT_LIMIT_ERROR = 'Attachments are limited to 100 MiB so they can sync reliably. Add a local file reference instead; the file will not be backed up to the remote repository.';
 const EMPTY_FOLDER_MARKER = '.kanbanos-folder';
 const AUTHOR = { name: 'Kanbanos Mobile', email: 'workspace@kanbanos.app' };
 
@@ -969,6 +971,7 @@ export class MobileGitWorkspaceService {
   async importFiles(): Promise<ImportedAttachment[]> {
     const sources = await this.nativeFiles.pickFiles();
     if (sources.length > MAX_IMPORT_FILES) throw new Error('That attachment selection contains too many files.');
+    if (sources.some((source) => Math.max(source.size, source.bytes.length) > MAX_SYNCED_ATTACHMENT_BYTES)) throw new Error(ATTACHMENT_LIMIT_ERROR);
     if (sources.reduce((total, source) => total + source.bytes.length, 0) > MAX_IMPORT_BYTES) {
       throw new Error('That attachment selection is too large to import.');
     }
@@ -988,6 +991,7 @@ export class MobileGitWorkspaceService {
     const source = await this.nativeFiles.pickFolder();
     if (!source) return [];
     if (source.files.length > MAX_IMPORT_FILES) throw new Error('That attachment selection contains too many files.');
+    if (source.files.some((file) => Math.max(file.size, file.bytes.length) > MAX_SYNCED_ATTACHMENT_BYTES)) throw new Error(ATTACHMENT_LIMIT_ERROR);
     if (source.files.reduce((total, file) => total + file.bytes.length, 0) > MAX_IMPORT_BYTES) {
       throw new Error('That attachment selection is too large to import.');
     }
@@ -1121,8 +1125,11 @@ export function createMobileBridge(service = new MobileGitWorkspaceService()): N
     attachments: {
       pickFiles: () => service.importFiles(),
       pickFolders: () => service.importFolder(),
+      pickReferences: async () => { throw new Error('Local file references are available in the desktop app.'); },
       open: (relativePath) => service.shareAttachment(relativePath),
       reveal: (relativePath) => service.shareAttachment(relativePath),
+      openReference: async () => { throw new Error('This local file reference is only available on the computer where it was added.'); },
+      revealReference: async () => { throw new Error('This local file reference is only available on the computer where it was added.'); },
       preview: (relativePath) => service.previewAttachment(relativePath),
       remove: (attachmentId) => service.removeAttachment(attachmentId),
     },

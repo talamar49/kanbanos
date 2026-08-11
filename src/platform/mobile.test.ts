@@ -299,6 +299,9 @@ describe('mobile Git workspace', () => {
       bytes: new Uint8Array(),
     }));
     await expect(current.importFiles()).rejects.toThrow('contains too many files');
+
+    nativeFiles.files = [{ name: 'large-video.mp4', size: 100 * 1024 * 1024 + 1, bytes: new Uint8Array() }];
+    await expect(current.importFiles()).rejects.toThrow('Attachments are limited to 100 MiB');
   });
 
   it('round-trips an exported workspace package into a new mobile repository', async () => {

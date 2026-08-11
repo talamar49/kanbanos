@@ -7,6 +7,7 @@ import { FilesView } from './components/FilesView';
 import { KanbanBoard } from './components/KanbanBoard';
 import { ListView } from './components/ListView';
 import { MobileNavigation } from './components/MobileNavigation';
+import { MobileTimelineView } from './components/MobileTimelineView';
 import { Onboarding } from './components/Onboarding';
 import { ProjectModal } from './components/ProjectModal';
 import { RemoteModal } from './components/RemoteModal';
@@ -133,7 +134,10 @@ export default function App() {
     revisionRef.current += 1;
     setDocument((current) => workspaceReducer(current, action));
     setDirty(true);
-    if (saveState === 'synced') setSaveState('idle');
+    if (saveState !== 'saving') {
+      setSaveState('idle');
+      setSyncError('');
+    }
   }, [saveState]);
 
   const save = useCallback(async () => {
@@ -185,7 +189,7 @@ export default function App() {
   }, [document, notify, t]);
 
   useEffect(() => {
-    if (bootState !== 'ready' || !connection || !dirty || saveState === 'saving') return;
+    if (bootState !== 'ready' || !connection || !dirty || saveState === 'saving' || saveState === 'error') return;
     const timer = window.setTimeout(() => void save(), 700);
     return () => window.clearTimeout(timer);
   }, [bootState, connection, dirty, document, save, saveState]);
@@ -295,17 +299,19 @@ export default function App() {
     }
   };
 
-  const addTaskAttachments = async (itemId: string, kind: 'files' | 'folders'): Promise<WorkspaceAttachment[]> => {
+  const addTaskAttachments = async (itemId: string, kind: 'files' | 'folders' | 'references'): Promise<WorkspaceAttachment[]> => {
     const api = window.kanbanos?.attachments;
     if (!api) {
       notify(t('Attachments are available in the desktop app.'), 'error');
       return [];
     }
     try {
-      const attachments = await (kind === 'files' ? api.pickFiles(language) : api.pickFolders(language));
+      const attachments = await (kind === 'files' ? api.pickFiles(language) : kind === 'folders' ? api.pickFolders(language) : api.pickReferences(language));
       if (attachments.length === 0) return [];
       applyAction({ type: 'addAttachments', itemId, attachments });
-      notify(t(attachments.length === 1 ? 'Attachment added to the task.' : '{{count}} attachments added to the task.', { count: attachments.length }));
+      notify(t(kind === 'references'
+        ? attachments.length === 1 ? 'Local file reference added to the task.' : '{{count}} local file references added to the task.'
+        : attachments.length === 1 ? 'Attachment added to the task.' : '{{count}} attachments added to the task.', { count: attachments.length }));
       return attachments;
     } catch (error) {
       notify(error instanceof Error ? t(error.message) : t('Could not attach that item.'), 'error');
@@ -313,14 +319,14 @@ export default function App() {
     }
   };
 
-  const addCanvasAttachments = async (projectId: string, point: CanvasPoint, kind: 'files' | 'folders') => {
+  const addCanvasAttachments = async (projectId: string, point: CanvasPoint, kind: 'files' | 'folders' | 'references') => {
     const api = window.kanbanos?.attachments;
     if (!api) {
       notify(t('Attachments are available in the desktop app.'), 'error');
       return;
     }
     try {
-      const attachments = await (kind === 'files' ? api.pickFiles(language) : api.pickFolders(language));
+      const attachments = await (kind === 'files' ? api.pickFiles(language) : kind === 'folders' ? api.pickFolders(language) : api.pickReferences(language));
       if (attachments.length === 0) return;
       const canvasNodes = Object.values(document.modules.canvas.projects[projectId]?.nodes ?? {});
       const topZIndex = Math.max(0, ...canvasNodes.map((node) => node.zIndex));
@@ -340,8 +346,14 @@ export default function App() {
 
   const openAttachment = async (attachment: WorkspaceAttachment) => {
     try {
-      if (!window.kanbanos?.attachments) throw new Error('Attachments are available in the desktop app.');
-      await window.kanbanos.attachments.open(attachment.relativePath);
+      const api = window.kanbanos?.attachments;
+      if (!api) throw new Error('Attachments are available in the desktop app.');
+      if (attachment.kind === 'reference') {
+        if (isNativeMobile() || !attachment.localPath) throw new Error('This local file reference is only available on the computer where it was added.');
+        await api.openReference(attachment.localPath);
+      } else {
+        await api.open(attachment.relativePath);
+      }
     } catch (error) {
       notify(error instanceof Error ? t(error.message) : t('Could not open that attachment.'), 'error');
     }
@@ -349,11 +361,25 @@ export default function App() {
 
   const revealAttachment = async (attachment: WorkspaceAttachment) => {
     try {
-      if (!window.kanbanos?.attachments) throw new Error('Attachments are available in the desktop app.');
-      await window.kanbanos.attachments.reveal(attachment.relativePath);
+      const api = window.kanbanos?.attachments;
+      if (!api) throw new Error('Attachments are available in the desktop app.');
+      if (attachment.kind === 'reference') {
+        if (isNativeMobile() || !attachment.localPath) throw new Error('This local file reference is only available on the computer where it was added.');
+        await api.revealReference(attachment.localPath);
+      } else {
+        await api.reveal(attachment.relativePath);
+      }
     } catch (error) {
       notify(error instanceof Error ? t(error.message) : t('Could not show that attachment.'), 'error');
     }
+  };
+
+  const requestAttachmentPreview = (attachment: WorkspaceAttachment) => {
+    if (attachment.kind === 'reference') {
+      void openAttachment(attachment);
+      return;
+    }
+    setPreviewAttachment(attachment);
   };
 
   const removeTaskAttachment = async (attachment: WorkspaceAttachment) => {
@@ -546,6 +572,7 @@ export default function App() {
           dirty={dirty}
           onAction={applyAction}
           onOpenTask={(item) => setOpenTaskId(item.id)}
+          onCreateTask={(preset) => openTaskComposer(activeProject.id, preset)}
           onSave={() => void save()}
           onEditProject={() => setProjectModal({ mode: 'edit', projectId: activeProject.id })}
           onChangeView={setActiveView}
@@ -565,7 +592,17 @@ export default function App() {
           onEditProject={() => setProjectModal({ mode: 'edit', projectId: activeProject.id })}
         />
       )}
-      {activeView === 'timeline' && (
+      {activeView === 'timeline' && (compactLayout ? (
+        <MobileTimelineView
+          document={document}
+          project={activeProject}
+          saveState={saveState}
+          dirty={dirty}
+          onOpenTask={(item) => setOpenTaskId(item.id)}
+          onCreateTask={(preset) => openTaskComposer(activeProject.id, preset)}
+          onSave={() => void save()}
+        />
+      ) : (
         <TimelineView
           document={document}
           project={activeProject}
@@ -577,7 +614,7 @@ export default function App() {
           onSave={() => void save()}
           onEditProject={() => setProjectModal({ mode: 'edit', projectId: activeProject.id })}
         />
-      )}
+      ))}
       {activeView === 'canvas' && (
         <CanvasView
           document={document}
@@ -589,8 +626,9 @@ export default function App() {
           onOpenTask={(item) => setOpenTaskId(item.id)}
           onCreateTask={(point) => openCanvasTaskComposer(activeProject.id, point)}
           onAddFiles={(point, kind) => void addCanvasAttachments(activeProject.id, point, kind)}
-          onPreviewAttachment={setPreviewAttachment}
+          onPreviewAttachment={requestAttachmentPreview}
           onOpenAttachment={(attachment) => void openAttachment(attachment)}
+          mobile={isNativeMobile()}
         />
       )}
       {activeView === 'roadmap' && (
@@ -618,7 +656,7 @@ export default function App() {
           dirty={dirty}
           onSave={() => void save()}
           onOpenTask={(item) => setOpenTaskId(item.id)}
-          onPreviewAttachment={setPreviewAttachment}
+          onPreviewAttachment={requestAttachmentPreview}
           onOpenAttachment={(attachment) => void openAttachment(attachment)}
           onRevealAttachment={(attachment) => void revealAttachment(attachment)}
           mobile={isNativeMobile()}
@@ -646,7 +684,7 @@ export default function App() {
           attachments={(openTask.attachmentIds ?? []).map((attachmentId) => document.resources.attachments[attachmentId]).filter(Boolean)}
           onAction={applyAction}
           onAddAttachments={(kind) => addTaskAttachments(openTask.id, kind)}
-          onPreviewAttachment={setPreviewAttachment}
+          onPreviewAttachment={requestAttachmentPreview}
           onOpenAttachment={(attachment) => void openAttachment(attachment)}
           onRevealAttachment={(attachment) => void revealAttachment(attachment)}
           onRemoveAttachment={removeTaskAttachment}

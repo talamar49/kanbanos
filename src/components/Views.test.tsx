@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceDocument } from '../domain/types';
@@ -77,6 +77,31 @@ function commonViewCallbacks() {
     onSave: vi.fn(),
     onEditProject: vi.fn(),
   };
+}
+
+function startMouseDrag(target: Element, from = { x: 10, y: 10 }, to = { x: 20, y: 20 }) {
+  fireEvent.mouseDown(target, { button: 0, buttons: 1, clientX: from.x, clientY: from.y });
+  fireEvent.mouseMove(document, { buttons: 1, clientX: to.x, clientY: to.y });
+  fireEvent.mouseMove(document, { buttons: 1, clientX: to.x + 1, clientY: to.y + 1 });
+}
+
+function elementRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+async function stopMouseDrag(target: Element) {
+  fireEvent.mouseUp(target);
+  await new Promise((resolve) => window.setTimeout(resolve, 60));
 }
 
 describe('workspace navigation', () => {
@@ -173,9 +198,14 @@ describe('board and list task management', () => {
       />,
     );
 
-    expect(screen.getByText('Prepare launch')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Move Prepare launch' }));
-    expect(callbacks.onOpenTask).not.toHaveBeenCalled();
+    const taskCard = screen.getByText('Prepare launch').closest<HTMLElement>('.task-card')!;
+    expect(taskCard).toHaveAttribute('role', 'button');
+    expect(taskCard).toHaveAttribute('aria-label', 'Move Prepare launch');
+    expect(within(taskCard).queryByRole('button', { name: 'Move Prepare launch' })).not.toBeInTheDocument();
+    startMouseDrag(within(taskCard).getByRole('heading', { name: 'Prepare launch' }));
+    expect(taskCard).toHaveClass('dragging');
+    expect(window.document.querySelector('.task-drop-preview')).toHaveTextContent('Prepare launch');
+    await stopMouseDrag(taskCard);
     await user.type(screen.getByPlaceholderText('Search this project'), 'missing');
     expect(screen.queryByText('Prepare launch')).not.toBeInTheDocument();
     expect(screen.getByText('0 matching tasks')).toBeInTheDocument();
@@ -289,12 +319,25 @@ describe('timeline, roadmap, canvas, and files', () => {
     expect(onAddProject).toHaveBeenCalledWith(expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/));
 
     const launchCard = screen.getByText(document.projects[0].name).closest<HTMLElement>('.roadmap-card')!;
+    expect(launchCard).toHaveAttribute('role', 'button');
+    expect(launchCard).toHaveAttribute('aria-label', `Move ${document.projects[0].name}`);
+    expect(within(launchCard).queryByRole('button', { name: `Move ${document.projects[0].name}` })).not.toBeInTheDocument();
     await user.click(within(launchCard).getByRole('button', { name: 'Add task' }));
     expect(onAddTask).toHaveBeenCalledWith(document.projects[0].id, undefined);
     await user.click(within(launchCard).getByRole('button', { name: 'Open' }));
     expect(onOpenProject).toHaveBeenCalledWith(document.projects[0].id);
     await user.selectOptions(within(launchCard).getByLabelText('Planning horizon'), 'Next');
     expect(onMoveProject).toHaveBeenCalledWith(document.projects[0].id, expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/));
+
+    const nextHorizon = screen.getByRole('heading', { name: 'Next' }).closest<HTMLElement>('.roadmap-column')!;
+    vi.spyOn(launchCard, 'getBoundingClientRect').mockReturnValue(elementRect(800, 100, 330, 280));
+    vi.spyOn(nextHorizon, 'getBoundingClientRect').mockReturnValue(elementRect(400, 0, 350, 700));
+    startMouseDrag(within(launchCard).getByRole('heading', { name: document.projects[0].name }), { x: 820, y: 120 }, { x: 420, y: 120 });
+    expect(launchCard).toHaveClass('dragging');
+    const roadmapPreview = window.document.querySelector<HTMLElement>('.roadmap-drop-preview');
+    expect(roadmapPreview).toHaveTextContent(document.projects[0].name);
+    expect(nextHorizon).toContainElement(roadmapPreview);
+    await stopMouseDrag(launchCard);
   });
 
   it('creates notes and places existing tasks and files on the canvas', async () => {

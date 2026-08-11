@@ -348,7 +348,8 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
       typeof attachment.name === 'string' &&
       (attachment.title === undefined || typeof attachment.title === 'string') &&
       (attachment.description === undefined || typeof attachment.description === 'string') &&
-      (attachment.kind === 'file' || attachment.kind === 'folder') &&
+      (attachment.kind === 'file' || attachment.kind === 'folder' || attachment.kind === 'reference') &&
+      (attachment.kind !== 'reference' || typeof attachment.localPath === 'string') &&
       typeof attachment.relativePath === 'string' &&
       typeof attachment.sizeBytes === 'number' &&
       typeof attachment.fileCount === 'number' &&

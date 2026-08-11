@@ -114,7 +114,7 @@ export function TaskCard({ item, project, dragDisabled = false, subtasksCollapse
   const [subtasksExpanded, setSubtasksExpanded] = useState(false);
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const subtaskInputRef = useRef<HTMLInputElement>(null);
-  const { attributes, listeners, setActivatorNodeRef, setNodeRef, transform, transition, isDragging } = useSortable({
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
     data: { type: 'item', columnId: item.moduleData.kanban.columnId },
     disabled: dragDisabled,
@@ -193,19 +193,10 @@ export function TaskCard({ item, project, dragDisabled = false, subtasksCollapse
       style={style}
       className={`task-card ${dragDisabled ? 'drag-disabled' : ''} ${isDragging ? 'dragging' : ''}`}
       onClick={() => !isDragging && onOpen(item)}
+      aria-label={!dragDisabled ? t('Move {{name}}', { name: item.title }) : undefined}
+      {...(dragDisabled ? {} : attributes)}
+      {...(dragDisabled ? {} : listeners)}
     >
-      {!dragDisabled && (
-        <button
-          ref={setActivatorNodeRef}
-          type="button"
-          className="task-card-drag-handle"
-          aria-label={t('Move {{name}}', { name: item.title })}
-          title={t('Drag to move')}
-          onClick={(event) => event.stopPropagation()}
-          {...attributes}
-          {...listeners}
-        ><GripVertical size={16} /></button>
-      )}
       {project && (
         <div className="task-project-context" style={{ color: project.color }}>
           <i style={{ background: project.color }} />

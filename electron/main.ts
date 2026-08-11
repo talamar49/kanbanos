@@ -147,12 +147,26 @@ function registerIpc(): void {
     });
     return result.canceled ? [] : gitWorkspace.importAttachments(result.filePaths);
   });
+  ipcMain.handle('attachments:pick-references', async (_event, language: 'en' | 'he' = 'en') => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile', 'multiSelections'],
+      title: language === 'he' ? 'בחירת קבצים כהפניה מקומית' : 'Choose files to keep as local references',
+    });
+    return result.canceled ? [] : gitWorkspace.createLocalFileReferences(result.filePaths);
+  });
   ipcMain.handle('attachments:open', async (_event, relativePath: string) => {
     const error = await shell.openPath(await gitWorkspace.resolveAttachmentPath(relativePath));
     if (error) throw new Error(error);
   });
   ipcMain.handle('attachments:reveal', async (_event, relativePath: string) => {
     shell.showItemInFolder(await gitWorkspace.resolveAttachmentPath(relativePath));
+  });
+  ipcMain.handle('attachments:open-reference', async (_event, localPath: string) => {
+    const error = await shell.openPath(await gitWorkspace.resolveLocalReferencePath(localPath));
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle('attachments:reveal-reference', async (_event, localPath: string) => {
+    shell.showItemInFolder(await gitWorkspace.resolveLocalReferencePath(localPath));
   });
   ipcMain.handle('attachments:preview', async (_event, relativePath: string) => {
     const absolutePath = await gitWorkspace.resolveAttachmentPath(relativePath);

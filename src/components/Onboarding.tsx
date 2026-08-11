@@ -47,6 +47,7 @@ export function Onboarding({
   const [gitToken, setGitToken] = useState('');
   const [busy, setBusy] = useState<'create' | 'remote' | 'local' | 'recent' | null>(null);
   const [activeRecentPath, setActiveRecentPath] = useState('');
+  const [startOptionsOpen, setStartOptionsOpen] = useState(false);
   const [error, setError] = useState('');
 
   const createLocal = async () => {
@@ -116,8 +117,168 @@ export function Onboarding({
 
   const switchMode = (nextMode: 'home' | 'create' | 'remote') => {
     setMode(nextMode);
+    setStartOptionsOpen(false);
     setError('');
   };
+
+  if (mobile) {
+    return (
+      <main className="mobile-onboarding page-enter">
+        <header className="mobile-onboarding-header">
+          <div className="mobile-onboarding-brand">
+            <span className="brand-mark brand-mascot"><img src={kanbanosLogo} alt="" /></span>
+            <strong>Kanbanos</strong>
+          </div>
+          <PreferencesControls className="mobile-onboarding-preferences" />
+        </header>
+
+        {mode === 'home' && (
+          <section className="mobile-onboarding-home">
+            <div className="mobile-onboarding-hero">
+              <div className="mobile-onboarding-hero-art">
+                <span className="mobile-onboarding-hero-glow" />
+                <span className="mobile-onboarding-hero-spark hero-spark-one"><Sparkles size={19} /></span>
+                <span className="mobile-onboarding-hero-spark hero-spark-two"><Sparkles size={14} /></span>
+                <img src={kanbanosLogo} alt={t('Kanbanos mascot')} />
+              </div>
+              <h1>{t(recentWorkspaces.length ? 'Welcome back' : 'Your work, your device.')}</h1>
+              <p>{t(recentWorkspaces.length ? 'Pick up where you left off or start something new.' : 'Create a private workspace that is yours to keep.')}</p>
+            </div>
+
+            {recentWorkspaces.length > 0 && (
+              <section className="mobile-recent-workspaces" aria-label={t('Continue working')}>
+                <h2>{t('Continue working')}</h2>
+                <div className="mobile-recent-workspace-list">
+                  {recentWorkspaces.map((workspace) => (
+                    <div className="mobile-recent-workspace" key={workspace.repositoryPath}>
+                      <button type="button" onClick={() => void openRecent(workspace.repositoryPath)} disabled={busy !== null}>
+                        <span className="mobile-recent-workspace-icon" style={{ background: workspace.remoteUrl ? '#e9f3f7' : '#efedfb', color: workspace.remoteUrl ? '#477c94' : '#6559c1' }}>
+                          {workspace.remoteUrl ? <Cloud size={18} /> : <HardDrive size={18} />}
+                        </span>
+                        <span><strong>{workspace.displayName}</strong><small>{t('Stored securely on this device')}</small></span>
+                        {busy === 'recent' && activeRecentPath === workspace.repositoryPath ? <span className="spinner spinner-dark" /> : <ChevronRight size={18} />}
+                      </button>
+                      <button
+                        type="button"
+                        className="mobile-recent-remove"
+                        aria-label={t('Remove {{name}} from this device', { name: workspace.displayName })}
+                        onClick={() => void onRemoveRecent(workspace.repositoryPath)}
+                      ><X size={17} /></button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {error && <p className="form-error mobile-onboarding-error" role="alert">{error}</p>}
+            <button type="button" className="mobile-onboarding-primary" onClick={() => switchMode('create')} disabled={busy !== null}>
+              <Plus size={19} /> {t('New workspace')}
+            </button>
+            <button
+              type="button"
+              className="mobile-onboarding-more"
+              aria-expanded={startOptionsOpen}
+              onClick={() => setStartOptionsOpen((open) => !open)}
+            >{t('More ways to start')} <ChevronRight size={17} /></button>
+            {startOptionsOpen && (
+              <div className="mobile-onboarding-options slide-up">
+                <button type="button" onClick={() => void chooseLocal()} disabled={busy !== null}>
+                  <FolderOpen size={19} />
+                  <span><strong>{t('Import workspace package')}</strong><small>{t('Start from a workspace package or a Git repository.')}</small></span>
+                  {busy === 'local' ? <span className="spinner spinner-dark" /> : <ChevronRight size={17} />}
+                </button>
+                <button type="button" onClick={() => switchMode('remote')} disabled={busy !== null}>
+                  <GitBranch size={19} />
+                  <span><strong>{t('Clone remote workspace')}</strong><small>{t('Download from a Git URL')}</small></span>
+                  <ChevronRight size={17} />
+                </button>
+              </div>
+            )}
+            <p className="mobile-onboarding-storage"><LockKeyhole size={15} /> {t('Workspaces are stored privately on this device and can be exported at any time.')}</p>
+          </section>
+        )}
+
+        {mode === 'create' && (
+          <section className="mobile-onboarding-sheet slide-up">
+            <button type="button" className="mobile-onboarding-back" onClick={() => switchMode('home')}><ArrowLeft size={17} /> {t('Back to workspaces')}</button>
+            <span className="mobile-onboarding-orb"><FolderPlus size={22} /></span>
+            <h1>{t('Name your workspace')}</h1>
+            <p>{t('A private Git workspace will be created on this device.')}</p>
+            <label className="field-label" htmlFor="mobile-workspace-name">{t('Workspace name')}</label>
+            <div className={`repository-field ${error ? 'field-error' : ''}`}>
+              <FolderGit2 size={18} />
+              <input
+                id="mobile-workspace-name"
+                value={name}
+                onChange={(event) => { setName(event.target.value); setError(''); }}
+                onKeyDown={(event) => event.key === 'Enter' && void createLocal()}
+                placeholder={t('My creative workspace')}
+                autoFocus
+              />
+            </div>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <button type="button" className="mobile-onboarding-primary" onClick={() => void createLocal()} disabled={busy !== null}>
+              {busy === 'create' ? <span className="spinner" /> : <><Plus size={19} /> {t('Create workspace')}</>}
+            </button>
+          </section>
+        )}
+
+        {mode === 'remote' && (
+          <section className="mobile-onboarding-sheet mobile-remote-sheet slide-up">
+            <button type="button" className="mobile-onboarding-back" onClick={() => switchMode('home')}><ArrowLeft size={17} /> {t('Back to workspaces')}</button>
+            <span className="mobile-onboarding-orb"><GitBranch size={22} /></span>
+            <h1>{t('Clone a remote workspace')}</h1>
+            <p>{t('Paste the Git URL. Kanbanos will clone the workspace to this device and remember it here.')}</p>
+            <label className="field-label" htmlFor="mobile-repository-url">{t('Git repository URL')}</label>
+            <div className={`repository-field ${error ? 'field-error' : ''}`}>
+              <GitBranch size={18} />
+              <input
+                id="mobile-repository-url"
+                type="url"
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                value={url}
+                onChange={(event) => { setUrl(event.target.value); setError(''); }}
+                onKeyDown={(event) => event.key === 'Enter' && void connectRemote()}
+                placeholder="https://git.example.com/you/workspace.git"
+                spellCheck={false}
+                autoFocus
+              />
+            </div>
+            <label className="private-auth-toggle mobile-private-auth-toggle">
+              <input
+                type="checkbox"
+                checked={privateRepository}
+                onChange={(event) => {
+                  setPrivateRepository(event.target.checked);
+                  if (!event.target.checked) setGitToken('');
+                  setError('');
+                }}
+              />
+              <span><strong>{t('Private HTTPS repository')}</strong><small>{t('Authenticate with a personal access token or password')}</small></span>
+            </label>
+            {privateRepository && (
+              <div className="mobile-private-auth-fields">
+                <label>
+                  <span className="field-label">{t('Username (optional)')}</span>
+                  <div className="repository-field"><input value={gitUsername} onChange={(event) => { setGitUsername(event.target.value); setError(''); }} placeholder="oauth2" autoComplete="username" dir="ltr" /></div>
+                </label>
+                <label>
+                  <span className="field-label">{t('Personal access token or password')}</span>
+                  <div className={`repository-field ${error && !gitToken.trim() ? 'field-error' : ''}`}><input type="password" value={gitToken} onChange={(event) => { setGitToken(event.target.value); setError(''); }} onKeyDown={(event) => event.key === 'Enter' && void connectRemote()} placeholder={t('Token with repository access')} autoComplete="off" dir="ltr" /></div>
+                </label>
+              </div>
+            )}
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <button type="button" className="mobile-onboarding-primary" onClick={() => void connectRemote()} disabled={busy !== null}>
+              {busy === 'remote' ? <span className="spinner" /> : <><GitBranch size={18} /> {t('Clone workspace')}</>}
+            </button>
+          </section>
+        )}
+      </main>
+    );
+  }
 
   return (
     <main className="onboarding page-enter">

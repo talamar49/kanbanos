@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { GitWorkspaceService } from './git-service';
+import { GitWorkspaceService, MAX_SYNCED_ATTACHMENT_BYTES } from './git-service';
 
 const exec = promisify(execFile);
 let temporaryDirectory = '';
@@ -137,6 +137,44 @@ describe('Git workspace persistence', () => {
 
     await service.removeAttachment(imported[0].id);
     await expect(fs.access(resolved)).rejects.toThrow();
+  });
+
+  it('blocks oversized attachments before they can be copied or pushed, while allowing a local file reference', async () => {
+    const remote = await createBareRemote('attachment-limit.git');
+    const service = new GitWorkspaceService();
+    const connection = await service.createLocal('Attachment limit');
+    await service.addRemote(remote);
+    const document = { schemaVersion: 1, workspace: { name: 'Attachment limit' }, projects: [], items: {} };
+    await expect(service.saveWorkspace(document)).resolves.toMatchObject({ status: 'synced' });
+
+    const source = path.join(temporaryDirectory, 'large-video.mp4');
+    const file = await fs.open(source, 'w');
+    await file.truncate(MAX_SYNCED_ATTACHMENT_BYTES + 1);
+    await file.close();
+
+    await expect(service.importAttachments([source])).rejects.toThrow('Attachments are limited to 100 MiB');
+    await expect(fs.readdir(path.join(connection.repositoryPath, '.kanbanos', 'content', 'attachments'))).resolves.toEqual([]);
+
+    const [reference] = await service.createLocalFileReferences([source]);
+    expect(reference).toMatchObject({
+      name: 'large-video.mp4',
+      kind: 'reference',
+      localPath: source,
+      sizeBytes: MAX_SYNCED_ATTACHMENT_BYTES + 1,
+    });
+    const referenceDocument = {
+      ...document,
+      resources: { attachments: { [reference.id]: reference } },
+    };
+    await expect(service.saveWorkspace(referenceDocument)).resolves.toMatchObject({ status: 'synced' });
+    await expect(service.loadWorkspace()).resolves.toEqual(referenceDocument);
+
+    const storedOversized = path.join(connection.repositoryPath, '.kanbanos', 'content', 'attachments', 'legacy', 'large-video.mp4');
+    await fs.mkdir(path.dirname(storedOversized), { recursive: true });
+    await fs.copyFile(source, storedOversized);
+    const blocked = await service.saveWorkspace({ ...document, workspace: { name: 'Blocked oversized attachment' } });
+    expect(blocked).toMatchObject({ status: 'error', message: expect.stringContaining('over 100 MiB') });
+    expect(await git(remote, 'rev-list', '--count', 'main')).toBe('2');
   });
 
   it.skipIf(process.platform === 'win32')('rejects attachment paths that escape through repository symlinks', async () => {

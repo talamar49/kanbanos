@@ -360,17 +360,19 @@ kbd { padding: 1px 4px; color: #858994; border: 1px solid #d9dbe0; border-bottom
 .board-column:hover .column-actions { opacity: 1; }
 .column-menu { top: 31px; right: 0; width: 145px; }
 .task-list { display: flex; flex-direction: column; gap: 9px; min-height: 8px; }
+.task-drop-preview { position: relative; min-height: 72px; display: flex; align-items: center; gap: 11px; padding: 13px 14px; overflow: hidden; color: var(--purple-dark); border: 2px dashed color-mix(in srgb, var(--purple), var(--line) 34%); border-radius: 10px; background: color-mix(in srgb, var(--purple-soft), var(--panel) 42%); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--purple), transparent 92%); pointer-events: none; }
+.task-drop-preview > span { width: 4px; height: 38px; flex: 0 0 auto; border-radius: 5px; }
+.task-drop-preview > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.task-drop-preview strong { overflow: hidden; color: var(--ink); font-size: 14px; line-height: 1.35; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.task-drop-preview small { color: var(--purple-dark); font-size: 11px; font-weight: 650; }
 
 /* Cards */
-.task-card { position: relative; cursor: pointer; touch-action: pan-y; overflow: hidden; padding: 14px 14px 12px; border: 1px solid #e6e7ea; border-radius: 10px; background: #fff; box-shadow: var(--shadow-sm); transition: transform 170ms ease, border-color 150ms, box-shadow 170ms; }
+.task-card { position: relative; cursor: grab; touch-action: pan-y; overflow: hidden; padding: 14px 14px 12px; border: 1px solid #e6e7ea; border-radius: 10px; background: #fff; box-shadow: var(--shadow-sm); transition: transform 170ms ease, border-color 150ms, box-shadow 170ms; }
 .task-card:hover { transform: translateY(-2px); border-color: #d8d9df; box-shadow: 0 8px 24px rgba(32,35,45,.08), 0 2px 5px rgba(32,35,45,.04); }
-.task-card:active { cursor: pointer; }
+.task-card:focus-visible { outline: 0; border-color: color-mix(in srgb, var(--purple), var(--line) 35%); box-shadow: 0 0 0 3px color-mix(in srgb, var(--purple), transparent 78%), var(--shadow-sm); }
+.task-card:active { cursor: grabbing; }
 .task-card.drag-disabled { cursor: pointer; touch-action: auto; }
 .task-card.drag-disabled:active { cursor: pointer; }
-.task-card-drag-handle { position: absolute; z-index: 3; top: 8px; inset-inline-end: 7px; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; opacity: 0; color: #999eaa; border: 0; border-radius: 7px; background: rgba(246,246,249,.92); cursor: grab; touch-action: none; transition: opacity 140ms, color 140ms, background 140ms; }
-.task-card:hover .task-card-drag-handle, .task-card:focus-within .task-card-drag-handle { opacity: 1; }
-.task-card-drag-handle:hover { color: var(--purple); background: var(--purple-soft); }
-.task-card-drag-handle:focus-visible { opacity: 1; outline: 0; box-shadow: 0 0 0 3px rgba(103,89,207,.2); }
 .task-project-context { min-width: 0; display: flex; align-items: center; gap: 6px; margin: 0 0 9px; font-size: 8.5px; font-weight: 700; letter-spacing: .2px; }
 .task-project-context i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; }
 .task-project-context span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1092,13 +1094,15 @@ kbd { padding: 1px 4px; color: #858994; border: 1px solid #d9dbe0; border-bottom
 .roadmap-column > header em { margin-inline-start: auto; color: #6559bd; font-size: 10px; font-style: normal; font-weight: 650; animation: fadeIn 150ms ease both; }
 .roadmap-column > header p { margin: 8px 0 0; margin-inline-start: 45px; color: #8f96a2; font-size: 11px; }
 .roadmap-projects { display: flex; flex-direction: column; gap: 13px; }
-.roadmap-card { position: relative; cursor: default; touch-action: pan-y; padding: 18px; border: 1px solid #dfe2e7; border-radius: 13px; background: #fff; box-shadow: 0 3px 10px rgba(35,37,45,.045); transition: transform 170ms, box-shadow 170ms, border-color 170ms, opacity 170ms; }
+.roadmap-drop-preview { min-height: 82px; display: flex; align-items: center; gap: 12px; padding: 14px 16px; color: var(--purple-dark); border: 2px dashed color-mix(in srgb, var(--purple), var(--line) 32%); border-radius: 13px; background: color-mix(in srgb, var(--purple-soft), var(--panel) 40%); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--purple), transparent 92%); pointer-events: none; }
+.roadmap-drop-preview > span { width: 44px; height: 44px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px; }
+.roadmap-drop-preview > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.roadmap-drop-preview strong { overflow: hidden; color: var(--ink); font-size: 15px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.roadmap-drop-preview small { color: var(--purple-dark); font-size: 11px; font-weight: 650; }
+.roadmap-card { position: relative; cursor: grab; touch-action: pan-y; padding: 18px; border: 1px solid #dfe2e7; border-radius: 13px; background: #fff; box-shadow: 0 3px 10px rgba(35,37,45,.045); transition: transform 170ms, box-shadow 170ms, border-color 170ms, opacity 170ms; }
 .roadmap-card:hover { transform: translateY(-2px); border-color: #d1d3da; box-shadow: 0 12px 27px rgba(35,37,45,.09); }
-.roadmap-card:active { cursor: default; }
-.roadmap-card-drag-handle { width: 30px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; margin-inline-start: -8px; padding: 0; opacity: 0; color: #999eaa; border: 0; border-radius: 8px; background: transparent; cursor: grab; touch-action: none; transition: opacity 140ms, color 140ms, background 140ms; }
-.roadmap-card:hover .roadmap-card-drag-handle, .roadmap-card:focus-within .roadmap-card-drag-handle { opacity: 1; }
-.roadmap-card-drag-handle:hover { color: var(--purple); background: var(--purple-soft); }
-.roadmap-card-drag-handle:focus-visible { opacity: 1; outline: 0; box-shadow: 0 0 0 3px rgba(103,89,207,.2); }
+.roadmap-card:focus-visible { outline: 0; border-color: color-mix(in srgb, var(--purple), var(--line) 35%); box-shadow: 0 0 0 3px color-mix(in srgb, var(--purple), transparent 78%), var(--shadow-sm); }
+.roadmap-card:active { cursor: grabbing; }
 .roadmap-card.dragging { opacity: .18; box-shadow: none; }
 .roadmap-card.just-moved { animation: roadmapSettle 500ms cubic-bezier(.2,.9,.2,1); }
 .roadmap-card-top { display: flex; align-items: flex-start; gap: 11px; }
@@ -2020,6 +2024,8 @@ textarea.text-field { padding-top: 12px; }
 [data-theme='dark'] textarea::placeholder { color: #98a1ae !important; }
 [data-theme='dark'] .task-card:hover,
 [data-theme='dark'] .roadmap-card:hover { border-color: #737b88; box-shadow: 0 10px 28px rgba(15,18,23,.22); }
+[data-theme='dark'] .task-card:focus-visible,
+[data-theme='dark'] .roadmap-card:focus-visible { border-color: #a79df4; box-shadow: 0 0 0 3px rgba(167,157,244,.25), var(--shadow-sm); }
 [data-theme='dark'] .task-card.dragging,
 [data-theme='dark'] .board-column.column-over,
 [data-theme='dark'] .roadmap-column.drop-target { border-color: #8279ad; background: #504b66; }
@@ -2481,8 +2487,7 @@ textarea.text-field { padding-top: 12px; }
 .compact-layout .column-actions .icon-button { width: 40px; height: 40px; }
 .compact-layout .column-drag-handle { width: 40px; height: 40px; }
 .compact-layout .task-card { padding: 17px 16px 15px; }
-.compact-layout .task-card h3 { padding-inline-end: 36px; font-size: 15px; }
-.compact-layout .task-card-drag-handle { top: 8px; inset-inline-end: 7px; width: 40px; height: 40px; opacity: 1; }
+.compact-layout .task-card h3 { font-size: 15px; }
 .compact-layout .task-card:hover { transform: none; }
 .compact-layout .add-task-button,
 .compact-layout .add-column-button { min-height: 44px; font-size: 14px; }
@@ -2547,8 +2552,6 @@ textarea.text-field { padding-top: 12px; }
 .compact-layout .roadmap-horizons { min-width: min-content; display: flex; gap: 12px; }
 .compact-layout .roadmap-column { width: calc(100vw - 28px); max-width: 430px; min-height: 0; flex: 0 0 calc(100vw - 28px); padding: 15px; scroll-snap-align: center; }
 .compact-layout .roadmap-column > header { min-height: 62px; }
-.compact-layout .roadmap-card { touch-action: pan-y; }
-.compact-layout .roadmap-card-drag-handle { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; color: var(--muted); border: 0; border-radius: 9px; background: var(--canvas); cursor: grab; touch-action: none; }
 .compact-layout .roadmap-card-top { align-items: flex-start; }
 .compact-layout .roadmap-card-top > div h3 { font-size: 16px; }
 .compact-layout .mobile-roadmap-horizon { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; padding: 7px 9px 7px 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 10px; background: var(--canvas); font-size: 12px; font-weight: 650; }
@@ -2651,10 +2654,174 @@ textarea.text-field { padding-top: 12px; }
 [data-theme='dark'].compact-layout .mobile-bottom-nav button.active { color: #e4dfff; background: #56516f; }
 [data-theme='dark'].compact-layout .task-table-row,
 [data-theme='dark'].compact-layout .files-table-row { border-color: #535b67; background: #424852; }
-[data-theme='dark'].compact-layout .task-card-drag-handle,
-[data-theme='dark'].compact-layout .roadmap-card-drag-handle { color: #c3c9d2; background: #515863; }
 [data-theme='dark'].compact-layout .mobile-roadmap-horizon { border-color: #5b6370; background: #3d434d; }
 [data-theme='dark'].compact-layout .mobile-roadmap-horizon select { color: #eef0f4; border-color: #626b78; background: #454c57; }
+
+/* Mobile first-run, board, and agenda surfaces. */
+.mobile-onboarding { display: none; }
+
+.compact-layout .board-heading-row { min-height: 0; display: flex; align-items: center; padding: 8px 16px; }
+.compact-layout .board-heading-row .board-title { display: none; }
+.compact-layout .board-heading-row .board-view-toggle { width: 100%; }
+.compact-layout .board-scroll { overflow-x: hidden; overflow-y: auto; padding: 4px 14px calc(108px + env(safe-area-inset-bottom)); scroll-snap-type: none; }
+.compact-layout .board-columns { min-width: 0; min-height: 0; height: auto; display: flex; flex-direction: column; gap: 18px; }
+.compact-layout .board-column { width: 100%; max-width: none; min-height: 0; flex: 0 0 auto; padding: 0 12px 12px; border-color: var(--line); border-radius: 16px; background: color-mix(in srgb, var(--panel), var(--canvas) 10%); box-shadow: var(--shadow-sm); }
+.compact-layout .board-column.column-over { border-color: color-mix(in srgb, var(--purple), var(--line) 42%); background: color-mix(in srgb, var(--purple-soft), var(--panel) 74%); }
+.compact-layout .column-header { position: static; min-height: 58px; height: auto; padding: 6px 0; border-bottom-color: color-mix(in srgb, var(--line), transparent 18%); background: transparent; }
+.compact-layout .column-heading h2 { font-size: 14px; }
+.compact-layout .column-heading > span { min-width: 24px; height: 22px; font-size: 11px; }
+.compact-layout .column-actions { opacity: 1; }
+.compact-layout .task-list { gap: 10px; }
+.compact-layout .task-card:not(.drag-disabled) { touch-action: pan-y; }
+.compact-layout .task-card { border-radius: 13px; }
+.compact-layout .empty-column { height: 72px; min-height: 72px; flex-direction: row; gap: 8px; font-size: 14px; }
+.compact-layout .empty-column span { display: none; }
+.compact-layout .empty-column small { font-size: 14px; }
+.compact-layout .add-task-button { display: none; }
+.compact-layout .add-column-wrap { width: 100%; }
+.compact-layout .add-column-button { width: 100%; min-height: 48px; }
+.compact-layout .mobile-board-fab { position: fixed; z-index: 175; inset-inline-end: 16px; bottom: calc(78px + env(safe-area-inset-bottom)); min-height: 50px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 18px; color: #fff; border: 0; border-radius: 16px; background: var(--purple); box-shadow: 0 12px 30px color-mix(in srgb, var(--purple), transparent 68%); font-size: 15px; font-weight: 750; transition: transform 160ms ease, box-shadow 160ms ease; }
+.compact-layout .mobile-board-fab:active { transform: scale(.97); box-shadow: 0 7px 18px color-mix(in srgb, var(--purple), transparent 72%); }
+.compact-layout .mobile-board-fab:focus-visible { outline: 0; box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple), transparent 72%), 0 12px 30px color-mix(in srgb, var(--purple), transparent 68%); }
+
+.compact-layout .roadmap-content { overflow-x: hidden; overflow-y: auto; padding: 0 14px calc(92px + env(safe-area-inset-bottom)); scroll-snap-type: none; }
+.compact-layout .roadmap-horizons { min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+.compact-layout .roadmap-column { width: 100%; max-width: none; min-height: 0; flex: 0 0 auto; padding: 15px; border: 1px solid var(--line); border-radius: 16px; background: color-mix(in srgb, var(--panel), var(--canvas) 10%); box-shadow: var(--shadow-sm); scroll-snap-align: none; }
+.compact-layout .roadmap-column > header { position: static; min-height: 0; padding-bottom: 12px; background: transparent; }
+.compact-layout .roadmap-heading { gap: 10px; padding-top: 16px; padding-bottom: 12px; }
+.compact-layout .roadmap-heading .board-title p { display: none; }
+.compact-layout .roadmap-card { touch-action: pan-y; }
+.compact-layout .roadmap-empty { min-height: 82px; flex-direction: row; gap: 8px; padding: 12px; }
+.compact-layout .roadmap-empty span { display: none; }
+.compact-layout .roadmap-empty strong { font-size: 14px; }
+.compact-layout .roadmap-add-mission { min-height: 46px; font-size: 14px; }
+
+.compact-layout .mobile-timeline-view { padding-bottom: calc(66px + env(safe-area-inset-bottom)); }
+.compact-layout .mobile-view-topbar { min-height: calc(60px + env(safe-area-inset-top)); display: flex; align-items: flex-end; justify-content: space-between; padding: env(safe-area-inset-top) 16px 10px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--panel), transparent 4%); backdrop-filter: blur(16px); }
+.compact-layout .mobile-view-project { min-width: 0; display: flex; align-items: center; gap: 9px; color: var(--ink); font-size: 14px; font-weight: 750; }
+.compact-layout .mobile-view-project i { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%; box-shadow: 0 0 0 4px color-mix(in srgb, currentColor, transparent 94%); }
+.compact-layout .mobile-view-project span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compact-layout .mobile-save-control { width: 42px; height: 42px; display: grid; place-items: center; color: #438b71; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+.compact-layout .mobile-save-control.dirty { color: #fff; border-color: var(--purple); background: var(--purple); }
+.compact-layout .mobile-agenda { min-height: 0; flex: 1; overflow-y: auto; padding: 22px 16px 30px; }
+.compact-layout .mobile-agenda-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.compact-layout .mobile-agenda-heading > div { min-width: 0; }
+.compact-layout .mobile-agenda-kicker { display: flex; align-items: center; gap: 6px; color: var(--purple-dark); font-size: 12px; font-weight: 750; }
+.compact-layout .mobile-agenda-heading h1 { margin: 6px 0 0; color: var(--ink); font-size: 25px; line-height: 1.15; letter-spacing: -.8px; }
+.compact-layout .mobile-agenda-add { min-height: 44px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; color: #fff; border: 0; border-radius: 13px; background: var(--purple); font-size: 14px; font-weight: 700; }
+.compact-layout .mobile-agenda-controls { display: grid; grid-template-columns: 44px 1fr 44px; gap: 8px; align-items: center; margin: 20px 0 12px; }
+.compact-layout .mobile-agenda-controls > button { min-height: 42px; display: flex; align-items: center; justify-content: center; color: var(--ink); border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 14px; font-weight: 700; }
+.compact-layout .mobile-agenda-controls .icon-button { width: 44px; height: 42px; }
+.compact-layout .mobile-week-picker { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; padding: 7px; border: 1px solid var(--line); border-radius: 16px; background: color-mix(in srgb, var(--panel), var(--canvas) 18%); }
+.compact-layout .mobile-week-picker button { position: relative; min-width: 0; min-height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 4px 1px; color: var(--muted); border: 0; border-radius: 11px; background: transparent; }
+.compact-layout .mobile-week-picker button small { font-size: 11px; font-weight: 700; }
+.compact-layout .mobile-week-picker button strong { color: var(--ink); font-size: 16px; line-height: 1; }
+.compact-layout .mobile-week-picker button i { position: absolute; right: 5px; bottom: 5px; min-width: 14px; height: 14px; display: grid; place-items: center; color: #fff; border-radius: 8px; background: var(--purple); font-size: 9px; font-style: normal; font-weight: 750; }
+.compact-layout .mobile-week-picker button.today strong { color: var(--purple-dark); }
+.compact-layout .mobile-week-picker button.active { color: #fff; background: var(--purple); box-shadow: 0 4px 12px color-mix(in srgb, var(--purple), transparent 72%); }
+.compact-layout .mobile-week-picker button.active strong { color: #fff; }
+.compact-layout .mobile-week-picker button.active i { color: var(--purple-dark); background: #fff; }
+.compact-layout .mobile-agenda-day { margin-top: 18px; padding: 17px; border: 1px solid var(--line); border-radius: 17px; background: var(--panel); box-shadow: var(--shadow-sm); }
+.compact-layout .mobile-agenda-day > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 13px; border-bottom: 1px solid color-mix(in srgb, var(--line), transparent 20%); }
+.compact-layout .mobile-agenda-day p { margin: 0 0 3px; color: var(--muted); font-size: 12px; font-weight: 650; }
+.compact-layout .mobile-agenda-day h2 { margin: 0; color: var(--ink); font-size: 19px; letter-spacing: -.35px; }
+.compact-layout .mobile-agenda-day > header .icon-button { width: 42px; height: 42px; color: var(--purple-dark); border: 1px solid color-mix(in srgb, var(--purple), var(--line) 60%); background: var(--purple-soft); }
+.compact-layout .mobile-agenda-task-list { display: flex; flex-direction: column; gap: 9px; padding-top: 13px; }
+.compact-layout .mobile-agenda-task { width: 100%; min-height: 64px; display: flex; align-items: center; gap: 10px; padding: 10px 11px; color: var(--ink); border: 1px solid color-mix(in srgb, var(--line), transparent 6%); border-radius: 13px; background: color-mix(in srgb, var(--canvas), var(--panel) 54%); text-align: start; }
+.compact-layout .mobile-agenda-task:active { background: var(--purple-soft); }
+.compact-layout .mobile-agenda-task > i, .compact-layout .mobile-unscheduled-tasks > button > i { width: 4px; height: 38px; flex: 0 0 auto; border-radius: 4px; }
+.compact-layout .mobile-agenda-task > span, .compact-layout .mobile-unscheduled-tasks > button > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.compact-layout .mobile-agenda-task strong, .compact-layout .mobile-unscheduled-tasks strong { overflow: hidden; color: var(--ink); font-size: 14px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.compact-layout .mobile-agenda-task small, .compact-layout .mobile-unscheduled-tasks small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.compact-layout .mobile-agenda-task em { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11px; font-style: normal; }
+.compact-layout .mobile-agenda-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 28px 10px 10px; color: var(--muted); text-align: center; }
+.compact-layout .mobile-agenda-empty p { margin: 0; font-size: 14px; }
+.compact-layout .mobile-agenda-empty button { min-height: 42px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; color: var(--purple-dark); border: 1px solid color-mix(in srgb, var(--purple), var(--line) 55%); border-radius: 11px; background: var(--purple-soft); font-size: 14px; font-weight: 700; }
+.compact-layout .mobile-unscheduled-tasks { margin-top: 18px; padding: 4px 0 0; }
+.compact-layout .mobile-unscheduled-tasks > header { display: flex; align-items: center; justify-content: space-between; margin: 0 4px 8px; color: var(--muted); font-size: 13px; font-weight: 700; }
+.compact-layout .mobile-unscheduled-tasks > header small { min-width: 21px; height: 21px; display: grid; place-items: center; color: var(--muted); border-radius: 8px; background: color-mix(in srgb, var(--panel), var(--canvas) 48%); font-size: 11px; }
+.compact-layout .mobile-unscheduled-tasks > button { width: 100%; min-height: 58px; display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 10px 12px; color: var(--ink); border: 1px solid var(--line); border-radius: 13px; background: var(--panel); text-align: start; }
+.compact-layout .mobile-unscheduled-tasks > button > i { height: 32px; }
+
+.compact-layout .mobile-onboarding { min-height: 100dvh; display: flex; flex-direction: column; overflow-y: auto; color: var(--ink); background: radial-gradient(circle at 94% 0%, color-mix(in srgb, var(--purple-soft), transparent 25%), transparent 29%), var(--canvas); }
+.compact-layout .mobile-onboarding-header { min-height: calc(66px + env(safe-area-inset-top)); display: flex; align-items: flex-end; justify-content: space-between; padding: env(safe-area-inset-top) 20px 13px; }
+.compact-layout .mobile-onboarding-brand { display: flex; align-items: center; gap: 9px; color: var(--ink); font-size: 17px; letter-spacing: -.35px; }
+.compact-layout .mobile-onboarding-brand .brand-mark { width: 34px; height: 34px; }
+.compact-layout .mobile-onboarding-preferences { position: static; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--panel), transparent 4%); box-shadow: var(--shadow-sm); }
+.compact-layout .mobile-onboarding-preferences .language-toggle button { min-height: 34px; min-width: 35px; padding: 0 8px; font-size: 11px; }
+.compact-layout .mobile-onboarding-preferences .theme-toggle { width: 34px; height: 34px; }
+.compact-layout .mobile-onboarding-home, .compact-layout .mobile-onboarding-sheet { width: min(100%, 560px); margin: 0 auto; padding: 34px 20px max(28px, env(safe-area-inset-bottom)); animation: mobileSurfaceIn 300ms cubic-bezier(.2,.8,.2,1) both; }
+.compact-layout .mobile-onboarding-hero { margin-bottom: 28px; }
+.compact-layout .mobile-onboarding-hero-art { position: relative; width: 126px; height: 126px; display: grid; place-items: center; margin: -2px 0 20px; }
+.compact-layout .mobile-onboarding-hero-glow { position: absolute; inset: 7px; border-radius: 42% 58% 55% 45%; background: linear-gradient(145deg, #e8e2ff, #f3eeff 58%, #dff6ed); box-shadow: 0 16px 36px rgba(103,89,207,.16), inset 0 1px 0 rgba(255,255,255,.9); transform: rotate(-9deg); }
+.compact-layout .mobile-onboarding-hero-art img { position: relative; z-index: 2; width: 105px; height: 105px; object-fit: contain; filter: drop-shadow(0 12px 11px rgba(165,45,28,.22)); animation: welcomeMascotFloat 3.6s ease-in-out infinite; }
+.compact-layout .mobile-onboarding-hero-spark { position: absolute; z-index: 3; display: grid; place-items: center; color: #6a5bd0; border-radius: 50%; background: #fff; box-shadow: 0 5px 14px rgba(77,62,164,.14); animation: welcomeSparkPulse 2.8s ease-in-out infinite; }
+.compact-layout .hero-spark-one { top: 5px; inset-inline-end: 2px; width: 35px; height: 35px; }
+.compact-layout .hero-spark-two { bottom: 11px; inset-inline-start: 1px; width: 27px; height: 27px; animation-delay: .65s; }
+.compact-layout .mobile-onboarding-orb { width: 52px; height: 52px; display: grid; place-items: center; margin-bottom: 17px; color: var(--purple-dark); border: 1px solid color-mix(in srgb, var(--purple), var(--line) 54%); border-radius: 17px; background: color-mix(in srgb, var(--purple-soft), var(--panel) 40%); box-shadow: 0 10px 26px color-mix(in srgb, var(--purple), transparent 85%); }
+.compact-layout .mobile-onboarding-hero h1, .compact-layout .mobile-onboarding-sheet h1 { margin: 0; color: var(--ink); font-size: 30px; line-height: 1.08; letter-spacing: -1.1px; }
+.compact-layout .mobile-onboarding-hero p, .compact-layout .mobile-onboarding-sheet > p { margin: 11px 0 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+.compact-layout .mobile-recent-workspaces { margin-bottom: 20px; }
+.compact-layout .mobile-recent-workspaces h2 { margin: 0 0 10px; color: var(--muted); font-size: 12px; font-weight: 750; }
+.compact-layout .mobile-recent-workspace-list { display: flex; flex-direction: column; gap: 9px; }
+.compact-layout .mobile-recent-workspace { position: relative; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--panel), transparent 2%); box-shadow: var(--shadow-sm); }
+.compact-layout .mobile-recent-workspace > button:first-child { width: 100%; min-height: 69px; display: flex; align-items: center; gap: 11px; padding: 9px 52px 9px 11px; color: var(--ink); border: 0; border-radius: inherit; background: transparent; text-align: start; }
+.compact-layout .mobile-recent-workspace-icon { width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 13px; }
+.compact-layout .mobile-recent-workspace > button:first-child > span:nth-child(2) { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.compact-layout .mobile-recent-workspace strong { overflow: hidden; color: var(--ink); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.compact-layout .mobile-recent-workspace small { color: var(--muted); font-size: 12px; }
+.compact-layout .mobile-recent-workspace > button:first-child > svg { color: var(--soft); }
+.compact-layout .mobile-recent-remove { position: absolute; top: 13px; inset-inline-end: 10px; width: 42px; height: 42px; display: grid; place-items: center; color: var(--muted); border: 0; border-radius: 12px; background: transparent; }
+.compact-layout .mobile-recent-remove:active { color: #b75261; background: #fbeff0; }
+.compact-layout .mobile-onboarding-primary { width: 100%; min-height: 52px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 16px; color: #fff; border: 0; border-radius: 15px; background: var(--purple); box-shadow: 0 10px 25px color-mix(in srgb, var(--purple), transparent 72%); font-size: 15px; font-weight: 750; transition: transform 150ms ease, box-shadow 150ms ease; }
+.compact-layout .mobile-onboarding-primary:active:not(:disabled) { transform: translateY(1px) scale(.99); box-shadow: 0 5px 16px color-mix(in srgb, var(--purple), transparent 76%); }
+.compact-layout .mobile-onboarding-more { width: 100%; min-height: 48px; display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 8px; color: var(--purple-dark); border: 0; background: transparent; font-size: 14px; font-weight: 700; }
+.compact-layout .mobile-onboarding-more[aria-expanded='true'] > svg { transform: rotate(90deg); }
+.compact-layout .mobile-onboarding-options { display: grid; gap: 9px; margin: 3px 0 7px; padding: 8px; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--panel), transparent 2%); }
+.compact-layout .mobile-onboarding-options > button { min-height: 62px; display: flex; align-items: center; gap: 10px; padding: 9px 10px; color: var(--purple-dark); border: 0; border-radius: 11px; background: color-mix(in srgb, var(--purple-soft), var(--panel) 66%); text-align: start; }
+.compact-layout .mobile-onboarding-options > button > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.compact-layout .mobile-onboarding-options strong { color: var(--ink); font-size: 14px; }
+.compact-layout .mobile-onboarding-options small { color: var(--muted); font-size: 12px; }
+.compact-layout .mobile-onboarding-storage { display: flex; align-items: flex-start; gap: 7px; margin: 23px 1px 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.compact-layout .mobile-onboarding-storage svg { flex: 0 0 auto; margin-top: 1px; color: #4b9a7b; }
+.compact-layout .mobile-onboarding-error { margin-bottom: 10px; }
+.compact-layout .mobile-onboarding-sheet { padding-top: 20px; }
+.compact-layout .mobile-onboarding-back { min-height: 42px; display: inline-flex; align-items: center; gap: 6px; margin: 0 0 28px -7px; padding: 0 7px; color: var(--muted); border: 0; border-radius: 9px; background: transparent; font-size: 14px; font-weight: 650; }
+.compact-layout .mobile-onboarding-sheet .mobile-onboarding-orb { margin-bottom: 18px; }
+.compact-layout .mobile-onboarding-sheet .field-label { margin-top: 28px; font-size: 14px; }
+.compact-layout .mobile-onboarding-sheet .repository-field { height: 52px; border-radius: 13px; }
+.compact-layout .mobile-onboarding-sheet .repository-field input { font-size: 16px; }
+.compact-layout .mobile-onboarding-sheet .mobile-onboarding-primary { margin-top: 16px; }
+.compact-layout .mobile-private-auth-toggle { margin-top: 16px; padding: 12px; border-radius: 13px; }
+.compact-layout .mobile-private-auth-toggle strong { font-size: 14px; }
+.compact-layout .mobile-private-auth-toggle small { font-size: 12px; }
+.compact-layout .mobile-private-auth-fields { display: grid; gap: 13px; margin-top: 12px; }
+.compact-layout .mobile-private-auth-fields .field-label { margin: 0 0 7px; font-size: 13px; }
+.compact-layout .mobile-private-auth-fields .repository-field { height: 48px; }
+[dir='rtl'].compact-layout .mobile-onboarding-back svg,
+[dir='rtl'].compact-layout .mobile-onboarding-more > svg,
+[dir='rtl'].compact-layout .mobile-onboarding-options > button > svg:last-child,
+[dir='rtl'].compact-layout .mobile-recent-workspace > button:first-child > svg:last-child { transform: rotate(180deg); }
+
+.keyboard-open .mobile-bottom-nav,
+.keyboard-open .mobile-menu-trigger { opacity: 0; pointer-events: none; transform: translateY(110%); }
+.keyboard-open .canvas-toolbar,
+.keyboard-open .canvas-style-bar,
+.keyboard-open .canvas-zoom-controls,
+.keyboard-open .canvas-project-chip,
+.keyboard-open .canvas-mode-hint { opacity: 0; pointer-events: none; }
+.keyboard-open .canvas-stage { padding-bottom: 0; }
+
+[data-theme='dark'] .mobile-onboarding { color: var(--ink); background: radial-gradient(circle at 94% 0%, rgba(117,105,202,.24), transparent 31%), var(--canvas); }
+[data-theme='dark'].compact-layout .mobile-onboarding-hero-glow { background: linear-gradient(145deg, #56506f, #464b5a 58%, #3e5a58); box-shadow: 0 16px 36px rgba(8,10,14,.28), inset 0 1px 0 rgba(255,255,255,.08); }
+[data-theme='dark'].compact-layout .mobile-onboarding-hero-spark { color: #c7beff; background: #4b5160; box-shadow: 0 5px 14px rgba(8,10,14,.32); }
+[data-theme='dark'].compact-layout .mobile-agenda-task { background: color-mix(in srgb, var(--canvas), var(--panel) 58%); }
+[data-theme='dark'].compact-layout .mobile-week-picker { background: color-mix(in srgb, var(--panel), var(--canvas) 25%); }
+[data-theme='dark'].compact-layout .mobile-recent-remove:active { color: #ffd3d8; background: #62434a; }
+
+@keyframes mobileSurfaceIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes welcomeMascotFloat { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-7px) rotate(2deg); } }
+@keyframes welcomeSparkPulse { 0%, 100% { transform: scale(.92) rotate(-8deg); } 50% { transform: scale(1.08) rotate(8deg); } }
 
 @media (max-width: 900px) {
   html:not(.compact-layout) body { min-width: 320px; min-height: 480px; }

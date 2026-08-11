@@ -32,8 +32,9 @@ type SaveResult = {
 type ImportedAttachment = {
   id: string;
   name: string;
-  kind: 'file' | 'folder';
+  kind: 'file' | 'folder' | 'reference';
   relativePath: string;
+  localPath?: string;
   sizeBytes: number;
   fileCount: number;
   createdAt: string;
@@ -75,8 +76,11 @@ interface Window {
     attachments: {
       pickFiles: (language?: 'en' | 'he') => Promise<ImportedAttachment[]>;
       pickFolders: (language?: 'en' | 'he') => Promise<ImportedAttachment[]>;
+      pickReferences: (language?: 'en' | 'he') => Promise<ImportedAttachment[]>;
       open: (relativePath: string) => Promise<void>;
       reveal: (relativePath: string) => Promise<void>;
+      openReference: (localPath: string) => Promise<void>;
+      revealReference: (localPath: string) => Promise<void>;
       preview: (relativePath: string) => Promise<AttachmentPreview>;
       remove: (attachmentId: string) => Promise<void>;
     };

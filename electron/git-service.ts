@@ -17,6 +17,9 @@ const LOCAL_CREDENTIALS_IGNORE_ENTRY = `/${CREDENTIALS_FILE}`;
 const SAFE_CREDENTIAL_PREFIX = 'safe:';
 const LOCAL_CREDENTIAL_PREFIX = 'local:';
 const MAX_CONFLICT_PREVIEW_BYTES = 1024 * 1024;
+export const MAX_SYNCED_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const ATTACHMENT_LIMIT_ERROR = 'Attachments are limited to 100 MiB so they can sync reliably. Add a local file reference instead; the file will not be backed up to the remote repository.';
+const UNSYNCABLE_ATTACHMENT_ERROR = 'This workspace contains an attachment over 100 MiB. Remove it from local Git history, then add it as a local file reference. The referenced file will not be backed up to the remote repository.';
 const GIT_IDENTITY_ARGS = [
   '-c',
   'user.name=Kanbanos',
@@ -70,8 +73,9 @@ export type SaveResult = {
 export type ImportedAttachment = {
   id: string;
   name: string;
-  kind: 'file' | 'folder';
+  kind: 'file' | 'folder' | 'reference';
   relativePath: string;
+  localPath?: string;
   sizeBytes: number;
   fileCount: number;
   createdAt: string;
@@ -85,6 +89,7 @@ function runGit(
   allowFailure = false,
   credentials?: GitCredentials,
   maxOutputBytes = Number.POSITIVE_INFINITY,
+  input?: string,
 ): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     const env: NodeJS.ProcessEnv = {
@@ -109,6 +114,8 @@ function runGit(
       env,
       windowsHide: true,
     });
+    if (input !== undefined) child.stdin.end(input);
+    else child.stdin.end();
 
     let stdout = '';
     let stderr = '';
@@ -190,6 +197,52 @@ async function inspectAttachmentSource(source: string): Promise<AttachmentStats>
   };
   await visit(source);
   return { kind: 'folder', sizeBytes, fileCount };
+}
+
+async function hasOversizedStoredAttachment(cwd: string): Promise<boolean> {
+  const root = path.join(cwd, ATTACHMENTS_DIRECTORY);
+  const visit = async (directory: string): Promise<boolean> => {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory() && await visit(target)) return true;
+      if (entry.isFile() && (await fs.stat(target)).size > MAX_SYNCED_ATTACHMENT_BYTES) return true;
+    }
+    return false;
+  };
+  return visit(root);
+}
+
+async function hasOversizedUnpushedAttachment(cwd: string, remoteBranch: string | null): Promise<boolean> {
+  const range = remoteBranch ? `origin/${remoteBranch}..HEAD` : 'HEAD';
+  const listed = await runGit(cwd, ['rev-list', '--objects', range], true);
+  if (listed.code !== 0 || !listed.stdout) return false;
+  const objectIds = new Set<string>();
+  for (const line of listed.stdout.split(/\r?\n/)) {
+    const match = /^([0-9a-f]{40})\s+(.+)$/.exec(line);
+    if (match?.[2].includes(`${ATTACHMENTS_DIRECTORY}/`)) objectIds.add(match[1]);
+  }
+  if (objectIds.size === 0) return false;
+  const inspected = await runGit(
+    cwd,
+    ['cat-file', '--batch-check=%(objecttype) %(objectsize)'],
+    true,
+    undefined,
+    Number.POSITIVE_INFINITY,
+    `${[...objectIds].join('\n')}\n`,
+  );
+  if (inspected.code !== 0) return false;
+  return inspected.stdout.split(/\r?\n/).some((line) => {
+    const match = /^blob\s+(\d+)$/.exec(line);
+    return Boolean(match && Number(match[1]) > MAX_SYNCED_ATTACHMENT_BYTES);
+  });
 }
 
 function normalizeCredentials(credentials?: GitCredentials): GitCredentials | undefined {
@@ -471,6 +524,9 @@ export class GitWorkspaceService {
   async saveWorkspace(document: unknown): Promise<SaveResult> {
     const repository = this.requireConnection();
     const cwd = repository.repositoryPath;
+    if (await hasOversizedStoredAttachment(cwd)) {
+      return { status: 'error', message: UNSYNCABLE_ATTACHMENT_ERROR, document };
+    }
 
     const unresolved = await this.listConflicts(cwd);
     if (unresolved.length > 0) {
@@ -543,6 +599,14 @@ export class GitWorkspaceService {
       }
 
       const pushRef = remoteBranch && remoteBranch !== branch ? `${branch}:${remoteBranch}` : branch;
+      if (await hasOversizedUnpushedAttachment(cwd, remoteBranch)) {
+        return {
+          status: 'error',
+          message: UNSYNCABLE_ATTACHMENT_ERROR,
+          commit: await this.head(cwd),
+          document: await this.loadWorkspace(),
+        };
+      }
       const pushed = await runGit(cwd, ['push', '-u', 'origin', pushRef], true, remote.credentials);
       if (pushed.code !== 0) {
         return {
@@ -594,6 +658,14 @@ export class GitWorkspaceService {
     const remoteBranch = await this.findRemoteBranch(cwd, branch);
     const pushRef = remoteBranch && remoteBranch !== branch ? `${branch}:${remoteBranch}` : branch;
     const remote = await this.getRemoteAccess(cwd);
+    if (await hasOversizedUnpushedAttachment(cwd, remoteBranch)) {
+      return {
+        status: 'error',
+        message: UNSYNCABLE_ATTACHMENT_ERROR,
+        commit: await this.head(cwd),
+        document: await this.loadWorkspace(),
+      };
+    }
     const pushed = await runGit(cwd, ['push', '-u', 'origin', pushRef], true, remote?.credentials);
     if (pushed.code !== 0) {
       return {
@@ -622,6 +694,7 @@ export class GitWorkspaceService {
     try {
       for (const source of sourcePaths) {
         const stats = await inspectAttachmentSource(source);
+        if (stats.sizeBytes > MAX_SYNCED_ATTACHMENT_BYTES) throw new Error(ATTACHMENT_LIMIT_ERROR);
         const id = randomUUID();
         const name = attachmentName(path.basename(source));
         const attachmentDirectory = path.join(root, id);
@@ -656,6 +729,33 @@ export class GitWorkspaceService {
       await Promise.all(imported.map((attachment) => fs.rm(path.join(root, attachment.id), { recursive: true, force: true })));
       throw error;
     }
+  }
+
+  async createLocalFileReferences(sourcePaths: string[]): Promise<ImportedAttachment[]> {
+    this.requireConnection();
+    const references: ImportedAttachment[] = [];
+    for (const source of sourcePaths) {
+      const stats = await fs.stat(source);
+      if (!stats.isFile()) throw new Error('Only files can be kept as local references.');
+      references.push({
+        id: randomUUID(),
+        name: attachmentName(path.basename(source)),
+        kind: 'reference',
+        relativePath: '',
+        localPath: path.resolve(source),
+        sizeBytes: stats.size,
+        fileCount: 1,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    return references;
+  }
+
+  async resolveLocalReferencePath(localPath: string): Promise<string> {
+    if (!path.isAbsolute(localPath)) throw new Error('That local file reference is invalid.');
+    const stats = await fs.stat(localPath);
+    if (!stats.isFile()) throw new Error('That local file reference is no longer available.');
+    return localPath;
   }
 
   async resolveAttachmentPath(relativePath: string): Promise<string> {

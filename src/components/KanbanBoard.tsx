@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   closestCorners,
   DndContext,
   DragEndEvent,
   DragOverlay,
+  DragOverEvent,
   DragStartEvent,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
@@ -33,9 +35,10 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import type { KanbanColumn, Priority, Project, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
+import type { KanbanColumn, Priority, Project, TaskDraft, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
 import { createWorkItem, itemsForColumn, PRIORITY_META } from '../domain/workspace';
 import { useI18n } from '../i18n';
+import { useCompactLayout } from '../platform/useCompactLayout';
 import { PreferencesControls } from './PreferencesControls';
 import { ProjectScopeSelect, type ProjectScope } from './ProjectScopeSelect';
 import { TaskCard } from './TaskCard';
@@ -77,9 +80,16 @@ type Props = {
   dirty: boolean;
   onAction: (action: WorkspaceAction) => void;
   onOpenTask: (item: WorkItem) => void;
+  onCreateTask?: (preset?: Partial<TaskDraft>) => void;
   onSave: () => void;
   onEditProject: () => void;
   onChangeView: (view: WorkspaceView) => void;
+};
+
+type TaskDropPreviewState = {
+  itemId: string;
+  columnId: string;
+  beforeItemId?: string;
 };
 
 type ColumnProps = {
@@ -90,11 +100,24 @@ type ColumnProps = {
   projectById: ReadonlyMap<string, Project>;
   collapsedSubtaskItemIds: ReadonlySet<string>;
   aggregate: boolean;
+  dropPreview?: TaskDropPreviewState & { item: WorkItem };
   onAction: (action: WorkspaceAction) => void;
   onOpenTask: (item: WorkItem) => void;
+  onCreateTask?: (preset?: Partial<TaskDraft>) => void;
+  mobile?: boolean;
 };
 
-function BoardColumn({ column, items, projectId, allColumns, projectById, collapsedSubtaskItemIds, aggregate, onAction, onOpenTask }: ColumnProps) {
+function TaskDropPreview({ item }: { item: WorkItem }) {
+  const { t } = useI18n();
+  return (
+    <div className="task-drop-preview" aria-hidden="true">
+      <span style={{ background: PRIORITY_META[item.priority].color }} />
+      <div><strong>{item.title}</strong><small>{t('Drop to move')}</small></div>
+    </div>
+  );
+}
+
+function BoardColumn({ column, items, projectId, allColumns, projectById, collapsedSubtaskItemIds, aggregate, dropPreview, onAction, onOpenTask, onCreateTask, mobile = false }: ColumnProps) {
   const { t } = useI18n();
   const {
     attributes,
@@ -133,6 +156,15 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
     });
     setTitle('');
     setAdding(false);
+  };
+
+  const requestTask = () => {
+    if (mobile && onCreateTask) {
+      onCreateTask({ columnId: column.id });
+      return;
+    }
+    setAdding(true);
+    window.setTimeout(() => composerRef.current?.focus(), 0);
   };
 
   const renameColumn = () => {
@@ -197,10 +229,7 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
         </div>
         {!aggregate && (
           <div className="column-actions">
-            <button className="icon-button" aria-label={t('Add task to {{name}}', { name: t(column.title) })} onClick={() => {
-              setAdding(true);
-              setTimeout(() => composerRef.current?.focus(), 0);
-            }}><Plus size={16} /></button>
+            <button className="icon-button" aria-label={t('Add task to {{name}}', { name: t(column.title) })} onClick={requestTask}><Plus size={16} /></button>
             <div className="relative">
               <button className="icon-button" aria-label={t('Column options')} onClick={() => setMenuOpen((open) => !open)}><Ellipsis size={17} /></button>
               {menuOpen && (
@@ -225,32 +254,37 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
       <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
         <div className="task-list">
           {items.map((item) => (
-            <TaskCard
-              key={item.id}
-              item={item}
-              project={aggregate ? projectById.get(item.projectId) : undefined}
-              dragDisabled={aggregate}
-              subtasksCollapsed={collapsedSubtaskItemIds.has(item.id)}
-              onOpen={onOpenTask}
-              onUpdateSubtasks={(itemId, subtasks) => onAction({
-                type: 'updateItem',
-                itemId,
-                changes: { subtasks },
-              })}
-              onSetSubtasksCollapsed={(itemId, collapsed) => onAction({
-                type: 'setKanbanSubtasksCollapsed',
-                itemId,
-                collapsed,
-              })}
-            />
+            <Fragment key={item.id}>
+              {dropPreview?.beforeItemId === item.id && <TaskDropPreview item={dropPreview.item} />}
+              <TaskCard
+                item={item}
+                project={aggregate ? projectById.get(item.projectId) : undefined}
+                dragDisabled={aggregate}
+                subtasksCollapsed={collapsedSubtaskItemIds.has(item.id)}
+                onOpen={onOpenTask}
+                onUpdateSubtasks={(itemId, subtasks) => onAction({
+                  type: 'updateItem',
+                  itemId,
+                  changes: { subtasks },
+                })}
+                onSetSubtasksCollapsed={(itemId, collapsed) => onAction({
+                  type: 'setKanbanSubtasksCollapsed',
+                  itemId,
+                  collapsed,
+                })}
+              />
+            </Fragment>
           ))}
-          {items.length === 0 && !adding && (aggregate ? (
+          {dropPreview && (!dropPreview.beforeItemId || !items.some((item) => item.id === dropPreview.beforeItemId)) && (
+            <TaskDropPreview item={dropPreview.item} />
+          )}
+          {items.length === 0 && !adding && !dropPreview && (aggregate ? (
             <div className="empty-column aggregate-empty">
               <Sparkles size={18} />
               <span>{t('No missions in this column')}</span>
             </div>
           ) : (
-            <button className="empty-column" onClick={() => setAdding(true)}>
+            <button className="empty-column" onClick={requestTask}>
               <Sparkles size={18} />
               <span>{t('Clear space for what’s next')}</span>
               <small>{t('Add the first task')}</small>
@@ -275,17 +309,15 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
           <div><span>{t('Press Enter to add')}</span><button onClick={() => setAdding(false)}><X size={14} /></button><button className="quick-add-submit" onClick={addTask}>{t('Add task')}</button></div>
         </div>
       ) : (
-        <button className="add-task-button" onClick={() => {
-          setAdding(true);
-          setTimeout(() => composerRef.current?.focus(), 0);
-        }}><Plus size={15} /> {t('Add task')}</button>
+        <button className="add-task-button" onClick={requestTask}><Plus size={15} /> {t('Add task')}</button>
       ))}
     </section>
   );
 }
 
-export function KanbanBoard({ document, project, saveState, dirty, onAction, onOpenTask, onSave, onEditProject, onChangeView }: Props) {
+export function KanbanBoard({ document, project, saveState, dirty, onAction, onOpenTask, onCreateTask, onSave, onEditProject, onChangeView }: Props) {
   const { t } = useI18n();
+  const compactLayout = useCompactLayout();
   const [search, setSearch] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [priorities, setPriorities] = useState<Priority[]>([]);
@@ -293,12 +325,14 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
   const [columnName, setColumnName] = useState('');
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
   const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null);
+  const [taskDropPreview, setTaskDropPreview] = useState<TaskDropPreviewState | null>(null);
   const [scope, setScope] = useState<ProjectScope>('current');
 
   useEffect(() => setScope('current'), [project.id]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: boardKeyboardCoordinates }),
   );
 
@@ -344,6 +378,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
   const clearDragState = () => {
     setDraggingItemId(null);
     setDraggingColumnId(null);
+    setTaskDropPreview(null);
   };
 
   const onDragStart = ({ active }: DragStartEvent) => {
@@ -351,10 +386,38 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
     if (data?.type === 'column') {
       setDraggingColumnId(data.columnId ?? null);
       setDraggingItemId(null);
+      setTaskDropPreview(null);
       return;
     }
-    setDraggingItemId(String(active.id));
+    const itemId = String(active.id);
+    const item = document.items[itemId];
+    setDraggingItemId(itemId);
     setDraggingColumnId(null);
+    setTaskDropPreview(item ? { itemId, columnId: item.moduleData.kanban.columnId, beforeItemId: itemId } : null);
+  };
+
+  const onDragOver = ({ active, over }: DragOverEvent) => {
+    const activeData = active.data.current as { type?: string } | undefined;
+    if (!over || activeData?.type === 'column') {
+      setTaskDropPreview(null);
+      return;
+    }
+    const itemId = String(active.id);
+    const item = document.items[itemId];
+    const overData = over.data.current as { type?: string; columnId?: string } | undefined;
+    const columnId = overData?.columnId ?? String(over.id).replace('column:', '');
+    const itemColumns = item ? document.modules.kanban.projects[item.projectId]?.columns ?? [] : [];
+    if (!item || !itemColumns.some((column) => column.id === columnId)) {
+      setTaskDropPreview(null);
+      return;
+    }
+
+    const targetItems = itemsForColumn(document, item.projectId, columnId);
+    const overIndex = overData?.type === 'item'
+      ? Math.max(0, targetItems.findIndex((target) => target.id === String(over.id)))
+      : targetItems.length;
+    const destinationItems = targetItems.filter((target) => target.id !== itemId);
+    setTaskDropPreview({ itemId, columnId, beforeItemId: destinationItems[overIndex]?.id });
   };
 
   const onDragEnd = ({ active, over }: DragEndEvent) => {
@@ -475,6 +538,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
         sensors={sensors}
         collisionDetection={boardCollisionDetection}
         onDragStart={onDragStart}
+        onDragOver={onDragOver}
         onDragCancel={clearDragState}
         onDragEnd={onDragEnd}
       >
@@ -491,8 +555,13 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
                   projectById={projectById}
                   collapsedSubtaskItemIds={collapsedSubtaskItemIds}
                   aggregate={showAllProjects}
+                  dropPreview={taskDropPreview?.columnId === column.id && draggingItem
+                    ? { ...taskDropPreview, item: draggingItem }
+                    : undefined}
+                  mobile={compactLayout}
                   onAction={onAction}
                   onOpenTask={onOpenTask}
+                  onCreateTask={onCreateTask}
                 />
               ))}
             </SortableContext>
@@ -539,6 +608,13 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
           ) : null}
         </DragOverlay>
       </DndContext>
+      {compactLayout && !showAllProjects && onCreateTask && (
+        <button
+          type="button"
+          className="mobile-board-fab"
+          onClick={() => onCreateTask({ columnId: activeColumns.find((column) => column.id === 'planned')?.id ?? activeColumns[0]?.id })}
+        ><Plus size={20} /> {t('New task')}</button>
+      )}
     </main>
   );
 }

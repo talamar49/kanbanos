@@ -50,7 +50,11 @@ function previewIcon(preview?: AttachmentPreview) {
 
 export function AttachmentPreviewModal({ attachment, onClose, onOpen, onReveal, mobile = false }: Props) {
   const { direction, locale, t } = useI18n();
-  const rootTarget = useMemo<PreviewTarget>(() => ({ name: attachment.name, relativePath: attachment.relativePath, kind: attachment.kind }), [attachment]);
+  const rootTarget = useMemo<PreviewTarget>(() => ({
+    name: attachment.name,
+    relativePath: attachment.relativePath,
+    kind: attachment.kind === 'folder' ? 'folder' : 'file',
+  }), [attachment]);
   const [history, setHistory] = useState<PreviewTarget[]>([rootTarget]);
   const [preview, setPreview] = useState<AttachmentPreview | null>(null);
   const [loading, setLoading] = useState(true);

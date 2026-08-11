@@ -7,6 +7,7 @@ import {
   Files,
   Folder,
   FolderOpen,
+  HardDrive,
   Paperclip,
   Search,
   X,
@@ -65,7 +66,7 @@ export function FilesView({ document, saveState, dirty, onSave, onOpenTask, onPr
     ...tasks.map((task) => task.title),
     ...tasks.map((task) => projectById.get(task.projectId)?.name ?? ''),
   ].join(' ').toLocaleLowerCase().includes(normalizedSearch));
-  const totalSize = rows.reduce((sum, row) => sum + row.attachment.sizeBytes, 0);
+  const totalSize = rows.reduce((sum, row) => sum + (row.attachment.kind === 'reference' ? 0 : row.attachment.sizeBytes), 0);
 
   return (
     <main className="workspace-main files-view page-enter">
@@ -107,15 +108,15 @@ export function FilesView({ document, saveState, dirty, onSave, onOpenTask, onPr
             </div>
             {visibleRows.map(({ attachment, tasks }) => (
               <div className="files-table-row" key={attachment.id}>
-                <button className="file-name-cell" onClick={() => onPreviewAttachment(attachment)} title={t('Preview {{name}}', { name: attachment.name })}>
+                <button className="file-name-cell" onClick={() => onPreviewAttachment(attachment)} title={t(attachment.kind === 'reference' ? 'Open {{name}}' : 'Preview {{name}}', { name: attachment.name })}>
                   <span className={`file-kind-icon ${attachment.kind}`}>
-                    {attachment.kind === 'folder' ? <Folder size={19} /> : <File size={19} />}
+                    {attachment.kind === 'folder' ? <Folder size={19} /> : attachment.kind === 'reference' ? <HardDrive size={19} /> : <File size={19} />}
                   </span>
-                  <span><strong><bdi>{attachment.name}</bdi></strong><small>{attachment.kind === 'folder' ? t('Folder') : t('File')}</small></span>
+                  <span><strong><bdi>{attachment.name}</bdi></strong><small>{attachment.kind === 'folder' ? t('Folder') : attachment.kind === 'reference' ? t('Local file reference') : t('File')}</small></span>
                 </button>
                 <div className="file-details-cell">
-                  <strong>{formatSize(attachment.sizeBytes, locale)}</strong>
-                  <small>{attachment.kind === 'folder' ? t('{{count}} files', { count: attachment.fileCount }) : t('Single file')}</small>
+                  <strong>{attachment.kind === 'reference' ? t('Not backed up') : formatSize(attachment.sizeBytes, locale)}</strong>
+                  <small>{attachment.kind === 'reference' ? t('Only available on the computer where it was added') : attachment.kind === 'folder' ? t('{{count}} files', { count: attachment.fileCount }) : t('Single file')}</small>
                 </div>
                 <div className="file-task-links">
                   {tasks.length > 0 ? tasks.map((task) => <button key={task.id} onClick={() => onOpenTask(task)}><Paperclip size={13} /><span><bdi>{task.title}</bdi></span></button>) : <span>{t('Not attached to a task')}</span>}
@@ -123,9 +124,9 @@ export function FilesView({ document, saveState, dirty, onSave, onOpenTask, onPr
                 <div className="file-project-cell">{tasks[0] ? <><i style={{ background: projectById.get(tasks[0].projectId)?.color }} />{projectById.get(tasks[0].projectId)?.name}</> : '—'}</div>
                 <time>{new Date(attachment.createdAt).toLocaleDateString(locale, { month: 'short', day: 'numeric', year: 'numeric' })}</time>
                 <div className="file-actions">
-                  <button className="icon-button" onClick={() => onPreviewAttachment(attachment)} title={t('Preview')} aria-label={t('Preview {{name}}', { name: attachment.name })}><Eye size={16} /></button>
+                  {attachment.kind !== 'reference' && <button className="icon-button" onClick={() => onPreviewAttachment(attachment)} title={t('Preview')} aria-label={t('Preview {{name}}', { name: attachment.name })}><Eye size={16} /></button>}
                   <button className="icon-button" onClick={() => onOpenAttachment(attachment)} title={t(mobile ? 'Share' : 'Open')} aria-label={t(mobile ? 'Share {{name}}' : 'Open {{name}}', { name: attachment.name })}><ExternalLink size={16} /></button>
-                  {!mobile && <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t('Show in workspace folder')} aria-label={t('Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={16} /></button>}
+                  {!mobile && <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t(attachment.kind === 'reference' ? 'Show local file' : 'Show in workspace folder')} aria-label={t(attachment.kind === 'reference' ? 'Show local file {{name}}' : 'Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={16} /></button>}
                 </div>
               </div>
             ))}

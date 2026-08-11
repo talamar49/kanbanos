@@ -7,5 +7,5 @@ export function isNativeMobile(): boolean {
 }
 
 export function isCompactLayout(): boolean {
-  return window.matchMedia?.(COMPACT_LAYOUT_QUERY).matches === true;
+  return isNativeMobile() || window.matchMedia?.(COMPACT_LAYOUT_QUERY).matches === true;
 }

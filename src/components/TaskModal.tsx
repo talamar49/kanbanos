@@ -30,6 +30,7 @@ import {
   Folder,
   FolderOpen,
   GripVertical,
+  HardDrive,
   Layers2,
   Link2,
   Paperclip,
@@ -58,7 +59,7 @@ type Props = {
   projectTasks: WorkItem[];
   attachments: WorkspaceAttachment[];
   onAction: (action: WorkspaceAction) => void;
-  onAddAttachments: (kind: 'files' | 'folders') => Promise<WorkspaceAttachment[]>;
+  onAddAttachments: (kind: 'files' | 'folders' | 'references') => Promise<WorkspaceAttachment[]>;
   onPreviewAttachment: (attachment: WorkspaceAttachment) => void;
   onOpenAttachment: (attachment: WorkspaceAttachment) => void;
   onRevealAttachment: (attachment: WorkspaceAttachment) => void;
@@ -148,7 +149,7 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-  const [addingAttachment, setAddingAttachment] = useState<'files' | 'folders' | null>(null);
+  const [addingAttachment, setAddingAttachment] = useState<'files' | 'folders' | 'references' | null>(null);
   const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
   const [links, setLinks] = useState<TaskLink[]>(item.links ?? []);
   const [linkComposerOpen, setLinkComposerOpen] = useState(false);
@@ -241,7 +242,7 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
     setLabelDraft('');
   };
 
-  const addAttachments = async (kind: 'files' | 'folders') => {
+  const addAttachments = async (kind: 'files' | 'folders' | 'references') => {
     setAddingAttachment(kind);
     try {
       const added = await onAddAttachments(kind);
@@ -431,15 +432,15 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
                 <div className="task-attachment-list">
                   {attachments.map((attachment) => (
                     <div className="task-attachment-row" key={attachment.id}>
-                      <button className={`task-attachment-main ${attachment.kind}`} onClick={() => onPreviewAttachment(attachment)} title={t('Preview {{name}}', { name: attachment.name })}>
-                        <span>{attachment.kind === 'folder' ? <Folder size={17} /> : <File size={17} />}</span>
-                        <span><strong><bdi>{attachment.title?.trim() || attachment.name}</bdi></strong><small><bdi>{attachment.description?.trim() || (attachment.kind === 'folder' ? t('{{count}} files · {{size}}', { count: attachment.fileCount, size: formatAttachmentSize(attachment.sizeBytes, locale) }) : formatAttachmentSize(attachment.sizeBytes, locale))}</bdi></small></span>
+                      <button className={`task-attachment-main ${attachment.kind}`} onClick={() => onPreviewAttachment(attachment)} title={t(attachment.kind === 'reference' ? 'Open {{name}}' : 'Preview {{name}}', { name: attachment.name })}>
+                        <span>{attachment.kind === 'folder' ? <Folder size={17} /> : attachment.kind === 'reference' ? <HardDrive size={17} /> : <File size={17} />}</span>
+                        <span><strong><bdi>{attachment.title?.trim() || attachment.name}</bdi></strong><small><bdi>{attachment.description?.trim() || (attachment.kind === 'folder' ? t('{{count}} files · {{size}}', { count: attachment.fileCount, size: formatAttachmentSize(attachment.sizeBytes, locale) }) : formatAttachmentSize(attachment.sizeBytes, locale))}</bdi></small>{attachment.kind === 'reference' && <small className="task-resource-description">{t('Local file reference · not backed up')}</small>}</span>
                       </button>
                       <div className="task-attachment-controls">
                         <button className="icon-button" onClick={() => editAttachmentDetails(attachment)} title={t('Edit details')} aria-label={t('Edit details for {{name}}', { name: attachment.title?.trim() || attachment.name })}><Pencil size={14} /></button>
-                        <button className="icon-button" onClick={() => onPreviewAttachment(attachment)} title={t('Preview')} aria-label={t('Preview {{name}}', { name: attachment.name })}><Eye size={15} /></button>
+                        {attachment.kind !== 'reference' && <button className="icon-button" onClick={() => onPreviewAttachment(attachment)} title={t('Preview')} aria-label={t('Preview {{name}}', { name: attachment.name })}><Eye size={15} /></button>}
                         <button className="icon-button" onClick={() => onOpenAttachment(attachment)} title={t(mobile ? 'Share' : 'Open')} aria-label={t(mobile ? 'Share {{name}}' : 'Open {{name}}', { name: attachment.name })}><ExternalLink size={15} /></button>
-                        {!mobile && <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t('Show in workspace folder')} aria-label={t('Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={15} /></button>}
+                        {!mobile && <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t(attachment.kind === 'reference' ? 'Show local file' : 'Show in workspace folder')} aria-label={t(attachment.kind === 'reference' ? 'Show local file {{name}}' : 'Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={15} /></button>}
                         <button className="icon-button attachment-remove" disabled={removingAttachmentId === attachment.id} onClick={() => void removeAttachment(attachment)} title={t('Remove attachment')} aria-label={t('Remove {{name}}', { name: attachment.name })}>
                           {removingAttachmentId === attachment.id ? <span className="spinner spinner-dark" /> : <X size={15} />}
                         </button>
@@ -474,10 +475,14 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
                 <button disabled={addingAttachment !== null} onClick={() => void addAttachments('folders')}>
                   {addingAttachment === 'folders' ? <span className="spinner spinner-dark" /> : <Folder size={16} />} {t('Attach folder')}
                 </button>
+                {!mobile && <button disabled={addingAttachment !== null} onClick={() => void addAttachments('references')}>
+                  {addingAttachment === 'references' ? <span className="spinner spinner-dark" /> : <HardDrive size={16} />} {t('Add local file reference')}
+                </button>}
                 <button className={linkComposerOpen ? 'active' : ''} aria-expanded={linkComposerOpen} onClick={() => linkComposerOpen ? closeLinkComposer() : openLinkComposer()}>
                   <Link2 size={16} /> {t('Add link')}
                 </button>
               </div>
+              {!mobile && <p>{t('Attachments are limited to 100 MiB so they can sync reliably. For larger files, add a local file reference. The file stays on this computer and is not backed up to the remote repository.')}</p>}
               {linkComposerOpen && (
                 <div className={`link-composer ${linkError ? 'invalid' : ''}`} onKeyDown={(event) => {
                   if (event.key === 'Escape') { event.stopPropagation(); closeLinkComposer(); }

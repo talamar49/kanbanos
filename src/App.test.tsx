@@ -30,8 +30,11 @@ function desktopApi(options: {
     attachments: {
       pickFiles: vi.fn().mockResolvedValue(options.attachments ?? []),
       pickFolders: vi.fn().mockResolvedValue([]),
+      pickReferences: vi.fn().mockResolvedValue([]),
       open: vi.fn().mockResolvedValue(undefined),
       reveal: vi.fn().mockResolvedValue(undefined),
+      openReference: vi.fn().mockResolvedValue(undefined),
+      revealReference: vi.fn().mockResolvedValue(undefined),
       preview: vi.fn().mockResolvedValue({ type: 'unsupported', name: 'file.bin', extension: '.bin' }),
       remove: vi.fn().mockResolvedValue(undefined),
     },
@@ -88,7 +91,39 @@ describe('Kanbanos app integration', () => {
     expect(document.querySelector('.sidebar')).not.toHaveClass('mobile-open');
 
     await user.click(within(mobileNavigation).getByRole('button', { name: 'Timeline' }));
-    expect(await screen.findByText(/Plan work, connect dependencies/)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /Week of/ })).toBeInTheDocument();
+    expect(document.querySelector('.mobile-timeline-view')).toBeInTheDocument();
+    expect(document.querySelector('.timeline-chart')).not.toBeInTheDocument();
+  });
+
+  it('opens a reliable task composer from the compact board and persists the created task', async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: true,
+      media: '(max-width: 760px)',
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    const { api } = desktopApi();
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click(await screen.findByRole('button', { name: 'Create a new workspace' }));
+    await user.type(screen.getByLabelText('Workspace name'), 'Mobile capture');
+    await user.click(screen.getByRole('button', { name: 'Choose location' }));
+    await user.click(await screen.findByRole('button', { name: 'Add task to Backlog' }));
+    expect(await screen.findByRole('dialog', { name: 'Create task' })).toBeInTheDocument();
+    await user.type(screen.getByLabelText('What needs to happen?'), 'Create from Android board');
+    await user.click(screen.getByRole('button', { name: 'Create task' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Task details' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close task' }));
+    expect(screen.getByText('Create from Android board')).toBeInTheDocument();
+    await waitFor(() => expect(api.workspace.save).toHaveBeenCalled());
   });
 
   it('creates a workspace, captures a task, and persists it through the desktop bridge', async () => {
@@ -156,6 +191,37 @@ describe('Kanbanos app integration', () => {
     expect(api.attachments.open).toHaveBeenCalledWith(imported.relativePath);
     await user.click(screen.getByRole('button', { name: 'Show brief.pdf in workspace folder' }));
     expect(api.attachments.reveal).toHaveBeenCalledWith(imported.relativePath);
+  });
+
+  it('opens a local file reference without trying to preview or sync its source file', async () => {
+    const user = userEvent.setup();
+    const stored = createEmptyWorkspace('Reference workspace');
+    const projectId = stored.projects[0].id;
+    const task = createWorkItem(projectId, 'planned', 'Review recording', 1000);
+    const reference: ImportedAttachment = {
+      id: '20000000-0000-4000-8000-000000000001',
+      name: 'planning-recording.mp4',
+      kind: 'reference',
+      relativePath: '',
+      localPath: '/home/alex/Videos/planning-recording.mp4',
+      sizeBytes: 260 * 1024 * 1024,
+      fileCount: 1,
+      createdAt: '2027-01-01T00:00:00.000Z',
+    };
+    task.attachmentIds = [reference.id];
+    stored.items[task.id] = task;
+    stored.resources.attachments[reference.id] = reference;
+    const recent = [{ repositoryPath: '/work/reference', displayName: 'Reference workspace' }];
+    const { api } = desktopApi({ stored, recent });
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click((await screen.findByText('Reference workspace')).closest('.recent-workspace-main')!);
+    await user.click(await screen.findByText('Review recording'));
+    expect(await screen.findByText('Local file reference · not backed up')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Open planning-recording.mp4' }));
+    expect(api.attachments.openReference).toHaveBeenCalledWith(reference.localPath);
+    expect(api.attachments.preview).not.toHaveBeenCalled();
   });
 
   it('synchronizes a remote workspace before marking the loaded document as current', async () => {

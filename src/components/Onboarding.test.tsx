@@ -26,14 +26,16 @@ describe('workspace onboarding', () => {
       />,
     );
 
+    expect(screen.getByAltText('Kanbanos mascot')).toBeInTheDocument();
     expect(screen.getByText('Stored securely on this device')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Remove Pocket workspace from this device' }));
     expect(handlers.onRemoveRecent).toHaveBeenCalledWith('/workspaces/internal-id');
+    await user.click(screen.getByRole('button', { name: 'More ways to start' }));
     await user.click(screen.getByRole('button', { name: /Import workspace package/ }));
     expect(handlers.onChooseLocal).toHaveBeenCalledTimes(1);
 
-    await user.click(screen.getByRole('button', { name: 'Create a new workspace' }));
-    expect(screen.getByText(/keep it safely on this device/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'New workspace' }));
+    expect(screen.getByText('A private Git workspace will be created on this device.')).toBeInTheDocument();
     await user.type(screen.getByLabelText('Workspace name'), 'Mobile work');
     await user.click(screen.getByRole('button', { name: 'Create workspace' }));
     expect(handlers.onCreateLocal).toHaveBeenCalledWith('Mobile work');

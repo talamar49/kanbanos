@@ -116,8 +116,9 @@ export type WorkspaceAttachment = {
   name: string;
   title?: string;
   description?: string;
-  kind: 'file' | 'folder';
+  kind: 'file' | 'folder' | 'reference';
   relativePath: string;
+  localPath?: string;
   sizeBytes: number;
   fileCount: number;
   createdAt: string;

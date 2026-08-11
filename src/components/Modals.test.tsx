@@ -229,6 +229,7 @@ describe('rich task details', () => {
       createdAt: '2027-01-01T00:00:00.000Z',
     };
     const onPreviewAttachment = vi.fn();
+    const onAddAttachments = vi.fn().mockResolvedValue([]);
     const onRemoveAttachment = vi.fn().mockResolvedValue(undefined);
     const onDelete = vi.fn().mockResolvedValue(true);
     const onClose = vi.fn();
@@ -240,7 +241,7 @@ describe('rich task details', () => {
         projectTasks={[item]}
         attachments={[file]}
         onAction={vi.fn()}
-        onAddAttachments={vi.fn().mockResolvedValue([])}
+        onAddAttachments={onAddAttachments}
         onPreviewAttachment={onPreviewAttachment}
         onOpenAttachment={vi.fn()}
         onRevealAttachment={vi.fn()}
@@ -249,6 +250,10 @@ describe('rich task details', () => {
         onClose={onClose}
       />,
     );
+
+    expect(screen.getByText('Attachments are limited to 100 MiB so they can sync reliably. For larger files, add a local file reference. The file stays on this computer and is not backed up to the remote repository.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Add local file reference' }));
+    await waitFor(() => expect(onAddAttachments).toHaveBeenCalledWith('references'));
 
     await user.click(screen.getByTitle('Preview brief.pdf'));
     expect(onPreviewAttachment).toHaveBeenCalledWith(file);

@@ -12,6 +12,11 @@
 - After development, run the complete `npm test` regression suite and `npm run build`. Do not report the mission complete unless both pass. If either cannot run, clearly report the blocker and the unverified behavior.
 - Use `npm run test:coverage` when adding a feature area or changing substantial behavior, and add missing coverage before completion.
 
+### Product interaction memory
+
+- Kanban task cards and Roadmap initiative cards must be draggable from the entire card surface. Never add dedicated six-dot, grip, or drag-handle controls to these cards. On touch devices, preserve page scrolling and use full-card press-and-drag activation instead of reintroducing handles.
+- While dragging a Kanban task or Roadmap initiative, show a visible in-column preview at the exact position where the card will be dropped.
+
 Every mission that changes the product UI must treat theme and language support as required work, not follow-up polish.
 
 - Verify the experience in both light and soft-dark themes. Keep primary text high-contrast and reserve muted colors for genuinely secondary information.

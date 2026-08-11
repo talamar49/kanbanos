@@ -2,18 +2,19 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { PreferencesProvider } from './i18n';
-import { COMPACT_LAYOUT_QUERY, isNativeMobile } from './platform/runtime';
+import { isCompactLayout, isNativeMobile } from './platform/runtime';
 import './styles/global.css';
 
 async function bootstrap() {
-  document.documentElement.classList.toggle(
-    'compact-layout',
-    window.matchMedia(COMPACT_LAYOUT_QUERY).matches,
-  );
+  document.documentElement.classList.toggle('compact-layout', isCompactLayout());
   const nativeMobile = isNativeMobile();
   if (nativeMobile) {
-    const { installMobileBridge } = await import('./platform/mobile');
+    const [{ installMobileBridge }, { installMobileKeyboardHandling }] = await Promise.all([
+      import('./platform/mobile'),
+      import('./platform/mobile-keyboard'),
+    ]);
     installMobileBridge();
+    void installMobileKeyboardHandling().catch(() => undefined);
   }
 
   ReactDOM.createRoot(document.getElementById('root')!).render(
