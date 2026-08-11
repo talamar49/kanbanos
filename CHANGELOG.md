@@ -4,6 +4,8 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-11
+
 ### Added
 
 - Native Android and iOS applications with offline Git workspaces, secure credential storage, attachment import/export, conflict handling, and mobile lifecycle support.
