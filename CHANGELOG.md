@@ -4,6 +4,22 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-11
+
+### Added
+
+- A phone-first agenda Timeline, quick task capture, keyboard-aware editing, and a lively branded mobile welcome experience.
+- Local file references that keep desktop-owned files linked without copying them into a workspace, alongside native attachment workflows.
+
+### Improved
+
+- Reworked mobile Board, Roadmap, onboarding, task details, Canvas, navigation, RTL, and soft-dark layouts for touch reachability and vertical planning.
+- Made native mobile layouts compact by default, preserved full-card touch drag-and-drop, and aligned Android instrumentation-test Kotlin dependencies.
+
+### Quality
+
+- Expanded regression coverage for the mobile agenda, keyboard lifecycle, native compact runtime, local references, onboarding, and application workflows.
+
 ## [0.3.0] - 2026-08-11
 
 ### Added
