@@ -187,7 +187,7 @@ describe('rich task details', () => {
 
     await user.click(screen.getByRole('button', { name: 'Close task' }));
 
-    const update = onAction.mock.calls.map(([action]) => action).find((action) => action.type === 'updateItem');
+    const update = onAction.mock.calls.map(([action]) => action).filter((action) => action.type === 'updateItem').at(-1);
     expect(update).toEqual(expect.objectContaining({
       type: 'updateItem',
       itemId: item.id,
