@@ -85,6 +85,7 @@ describe('mobile distribution', () => {
     expect(workflow).toContain("sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0'");
     expect(workflow).toContain('testDebugUnitTest');
     expect(workflow).toContain('signing: ${{ steps.android-package.outputs.signing }}');
+    expect(workflow).toContain('Automated desktop and mobile release from the main branch.');
     expect(workflow).toContain('The Android APK is installable directly and is ${ANDROID_SIGNING}-signed.');
     expect(workflow).toContain('name: android-package');
     expect(workflow).toContain('name: ios-package');

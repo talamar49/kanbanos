@@ -341,7 +341,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          Automated desktop and mobile release from the `main` branch.
+          Automated desktop and mobile release from the main branch.
 
           The Android APK is installable directly and is ${ANDROID_SIGNING}-signed. The iOS download is a universal compiled Simulator app for native QA; device and App Store distribution additionally require Apple signing credentials.
 
