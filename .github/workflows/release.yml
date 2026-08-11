@@ -274,7 +274,7 @@ jobs:
             build
           APP_PATH="$RUNNER_TEMP/kanbanos-ios/Build/Products/Release-iphonesimulator/App.app"
           test -d "$APP_PATH"
-          lipo -verify_arch arm64 x86_64 "$APP_PATH/App"
+          lipo "$APP_PATH/App" -verify_arch arm64 x86_64
           mkdir -p release-mobile
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "release-mobile/Kanbanos-${VERSION}-iOS-Simulator.zip"
           (cd release-mobile && shasum -a 256 "Kanbanos-${VERSION}-iOS-Simulator.zip" > "Kanbanos-${VERSION}-iOS-Simulator.zip.sha256")

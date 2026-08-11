@@ -81,7 +81,7 @@ describe('mobile distribution', () => {
     expect(workflow).toContain('Kanbanos-${VERSION}-Android.apk');
     expect(workflow).toContain('Kanbanos-${VERSION}-iOS-Simulator.zip');
     expect(workflow).toContain("ARCHS='arm64 x86_64'");
-    expect(workflow).toContain('lipo -verify_arch arm64 x86_64');
+    expect(workflow).toContain('lipo "$APP_PATH/App" -verify_arch arm64 x86_64');
     expect(workflow).toContain("sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0'");
     expect(workflow).toContain('testDebugUnitTest');
     expect(workflow).toContain('signing: ${{ steps.android-package.outputs.signing }}');
