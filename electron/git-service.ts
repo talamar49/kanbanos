@@ -502,7 +502,16 @@ export class GitWorkspaceService {
       if (remoteBranch) {
         const merged = await runGit(
           cwd,
-          ['merge', '--no-edit', '--allow-unrelated-histories', `origin/${remoteBranch}`],
+          [
+            '-c',
+            'user.name=Kanbanos',
+            '-c',
+            'user.email=workspace@kanbanos.app',
+            'merge',
+            '--no-edit',
+            '--allow-unrelated-histories',
+            `origin/${remoteBranch}`,
+          ],
           true,
         );
         if (merged.code !== 0) {
