@@ -7,16 +7,25 @@ import {
   DragStartEvent,
   KeyboardSensor,
   PointerSensor,
-  useDroppable,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
-import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import type { CollisionDetection, KeyboardCoordinateGetter } from '@dnd-kit/core';
+import {
+  arrayMove,
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import {
   Check,
   ChevronDown,
   Ellipsis,
   Filter,
+  GripVertical,
   LayoutGrid,
   ListFilter,
   Plus,
@@ -32,6 +41,34 @@ import { ProjectScopeSelect, type ProjectScope } from './ProjectScopeSelect';
 import { TaskCard } from './TaskCard';
 
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
+
+const boardCollisionDetection: CollisionDetection = (args) => {
+  if (args.active.data.current?.type !== 'column') return closestCorners(args);
+  return closestCorners({
+    ...args,
+    droppableContainers: args.droppableContainers.filter(
+      (container) => container.data.current?.type === 'column',
+    ),
+  });
+};
+
+const boardKeyboardCoordinates: KeyboardCoordinateGetter = (event, args) => {
+  if (args.context.active?.data.current?.type !== 'column') {
+    return sortableKeyboardCoordinates(event, args);
+  }
+  const source = args.context.droppableContainers;
+  const enabledColumns = () => source.getEnabled().filter(
+    (container) => container.data.current?.type === 'column',
+  );
+  const droppableContainers = new Map(source) as typeof source;
+  droppableContainers.getEnabled = enabledColumns;
+  droppableContainers.toArray = enabledColumns;
+  droppableContainers.getNodeFor = source.getNodeFor.bind(source);
+  return sortableKeyboardCoordinates(event, {
+    ...args,
+    context: { ...args.context, droppableContainers },
+  });
+};
 
 type Props = {
   document: WorkspaceDocument;
@@ -51,14 +88,24 @@ type ColumnProps = {
   projectId: string;
   allColumns: KanbanColumn[];
   projectById: ReadonlyMap<string, Project>;
+  collapsedSubtaskItemIds: ReadonlySet<string>;
   aggregate: boolean;
   onAction: (action: WorkspaceAction) => void;
   onOpenTask: (item: WorkItem) => void;
 };
 
-function BoardColumn({ column, items, projectId, allColumns, projectById, aggregate, onAction, onOpenTask }: ColumnProps) {
+function BoardColumn({ column, items, projectId, allColumns, projectById, collapsedSubtaskItemIds, aggregate, onAction, onOpenTask }: ColumnProps) {
   const { t } = useI18n();
-  const { setNodeRef, isOver } = useDroppable({
+  const {
+    attributes,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+    isOver,
+  } = useSortable({
     id: `column:${column.id}`,
     data: { type: 'column', columnId: column.id },
     disabled: aggregate,
@@ -113,9 +160,24 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, aggreg
   const atLimit = column.limit !== undefined && items.length >= column.limit;
 
   return (
-    <section ref={setNodeRef} className={`board-column ${isOver ? 'column-over' : ''}`}>
+    <section
+      ref={setNodeRef}
+      className={`board-column ${isOver ? 'column-over' : ''} ${isDragging ? 'column-dragging' : ''}`}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+    >
       <header className="column-header">
         <div className="column-heading">
+          {!aggregate && (
+            <button
+              ref={setActivatorNodeRef}
+              type="button"
+              className="column-drag-handle"
+              {...attributes}
+              {...listeners}
+              aria-label={t('Reorder {{name}} column', { name: t(column.title) })}
+              title={t('Drag column to reorder')}
+            ><GripVertical size={16} /></button>
+          )}
           <i style={{ background: column.color }} />
           {!aggregate && renaming ? (
             <input
@@ -168,15 +230,17 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, aggreg
               item={item}
               project={aggregate ? projectById.get(item.projectId) : undefined}
               dragDisabled={aggregate}
+              subtasksCollapsed={collapsedSubtaskItemIds.has(item.id)}
               onOpen={onOpenTask}
-              onToggleSubtask={(itemId, subtaskId) => onAction({
+              onUpdateSubtasks={(itemId, subtasks) => onAction({
                 type: 'updateItem',
                 itemId,
-                changes: {
-                  subtasks: item.subtasks.map((subtask) =>
-                    subtask.id === subtaskId ? { ...subtask, completed: !subtask.completed } : subtask,
-                  ),
-                },
+                changes: { subtasks },
+              })}
+              onSetSubtasksCollapsed={(itemId, collapsed) => onAction({
+                type: 'setKanbanSubtasksCollapsed',
+                itemId,
+                collapsed,
               })}
             />
           ))}
@@ -228,13 +292,14 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
   const [addingColumn, setAddingColumn] = useState(false);
   const [columnName, setColumnName] = useState('');
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null);
   const [scope, setScope] = useState<ProjectScope>('current');
 
   useEffect(() => setScope('current'), [project.id]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    useSensor(KeyboardSensor, { coordinateGetter: boardKeyboardCoordinates }),
   );
 
   const showAllProjects = scope === 'all';
@@ -244,6 +309,10 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
     : [project], [document.projects, project, showAllProjects]);
   const scopedProjectIds = useMemo(() => new Set(scopedProjects.map((candidate) => candidate.id)), [scopedProjects]);
   const projectById = useMemo(() => new Map(document.projects.map((candidate) => [candidate.id, candidate])), [document.projects]);
+  const collapsedSubtaskItemIds = useMemo(
+    () => new Set(document.preferences.collapsedKanbanSubtaskItemIds ?? []),
+    [document.preferences.collapsedKanbanSubtaskItemIds],
+  );
   const projectOrder = useMemo(() => new Map(scopedProjects.map((candidate, index) => [candidate.id, index])), [scopedProjects]);
   const columns = useMemo(() => {
     const seen = new Set<string>();
@@ -272,16 +341,45 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
       return projectDifference || left.moduleData.kanban.rank - right.moduleData.kanban.rank;
     });
 
+  const clearDragState = () => {
+    setDraggingItemId(null);
+    setDraggingColumnId(null);
+  };
+
   const onDragStart = ({ active }: DragStartEvent) => {
+    const data = active.data.current as { type?: string; columnId?: string } | undefined;
+    if (data?.type === 'column') {
+      setDraggingColumnId(data.columnId ?? null);
+      setDraggingItemId(null);
+      return;
+    }
     setDraggingItemId(String(active.id));
+    setDraggingColumnId(null);
   };
 
   const onDragEnd = ({ active, over }: DragEndEvent) => {
-    setDraggingItemId(null);
+    clearDragState();
     if (!over) return;
+    const activeData = active.data.current as { type?: string; columnId?: string } | undefined;
+    const overData = over.data.current as { type?: string; columnId?: string } | undefined;
+
+    if (activeData?.type === 'column') {
+      const activeColumnId = activeData.columnId;
+      const overColumnId = overData?.columnId ?? String(over.id).replace('column:', '');
+      const oldIndex = activeColumns.findIndex((column) => column.id === activeColumnId);
+      const newIndex = activeColumns.findIndex((column) => column.id === overColumnId);
+      if (oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) {
+        onAction({
+          type: 'reorderColumns',
+          projectId: project.id,
+          columnIds: arrayMove(activeColumns, oldIndex, newIndex).map((column) => column.id),
+        });
+      }
+      return;
+    }
+
     const item = document.items[String(active.id)];
     if (!item) return;
-    const overData = over.data.current as { type?: string; columnId?: string } | undefined;
     const columnId = overData?.columnId ?? String(over.id).replace('column:', '');
     const itemColumns = document.modules.kanban.projects[item.projectId]?.columns ?? [];
     if (!itemColumns.some((column) => column.id === columnId)) return;
@@ -310,6 +408,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
   };
 
   const draggingItem = draggingItemId ? document.items[draggingItemId] : undefined;
+  const draggingColumn = draggingColumnId ? activeColumns.find((column) => column.id === draggingColumnId) : undefined;
   const projectAssignees = Array.from(new Set(
     Object.values(document.items).filter((item) => scopedProjectIds.has(item.projectId)).map((item) => item.assignee).filter(Boolean),
   )).slice(0, 4) as string[];
@@ -374,26 +473,29 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
 
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCorners}
+        collisionDetection={boardCollisionDetection}
         onDragStart={onDragStart}
-        onDragCancel={() => setDraggingItemId(null)}
+        onDragCancel={clearDragState}
         onDragEnd={onDragEnd}
       >
         <div className="board-scroll">
           <div className="board-columns">
-            {columns.map((column) => (
-              <BoardColumn
-                key={column.id}
-                column={column}
-                items={filteredColumnItems(column.id)}
-                projectId={project.id}
-                allColumns={columns}
-                projectById={projectById}
-                aggregate={showAllProjects}
-                onAction={onAction}
-                onOpenTask={onOpenTask}
-              />
-            ))}
+            <SortableContext items={columns.map((column) => `column:${column.id}`)} strategy={horizontalListSortingStrategy}>
+              {columns.map((column) => (
+                <BoardColumn
+                  key={column.id}
+                  column={column}
+                  items={filteredColumnItems(column.id)}
+                  projectId={project.id}
+                  allColumns={columns}
+                  projectById={projectById}
+                  collapsedSubtaskItemIds={collapsedSubtaskItemIds}
+                  aggregate={showAllProjects}
+                  onAction={onAction}
+                  onOpenTask={onOpenTask}
+                />
+              ))}
+            </SortableContext>
             {!showAllProjects && (
               <div className="add-column-wrap">
                 {addingColumn ? (
@@ -427,6 +529,13 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
               {draggingItem.description && <p className="card-description">{draggingItem.description}</p>}
               <div className="drag-overlay-hint">{t('Drop to move')}</div>
             </article>
+          ) : draggingColumn ? (
+            <div className="column-drag-overlay">
+              <GripVertical size={18} />
+              <i style={{ background: draggingColumn.color }} />
+              <strong>{t(draggingColumn.title)}</strong>
+              <small>{t('Drop to reorder columns')}</small>
+            </div>
           ) : null}
         </DragOverlay>
       </DndContext>

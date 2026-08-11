@@ -8,7 +8,13 @@ const DATA_DIRECTORY = '.kanbanos';
 const WORKSPACE_FILE = `${DATA_DIRECTORY}/workspace.json`;
 const ATTACHMENTS_DIRECTORY = `${DATA_DIRECTORY}/content/attachments`;
 const SETTINGS_FILE = 'connection.json';
-const CREDENTIALS_FILE = 'credentials.json';
+const LEGACY_CREDENTIALS_FILE = 'credentials.json';
+const CREDENTIALS_FILE = `${DATA_DIRECTORY}/credentials.json`;
+const CREDENTIALS_IGNORE_FILE = `${DATA_DIRECTORY}/.gitignore`;
+const CREDENTIALS_IGNORE_ENTRY = '/credentials.json';
+const LOCAL_CREDENTIALS_IGNORE_ENTRY = `/${CREDENTIALS_FILE}`;
+const SAFE_CREDENTIAL_PREFIX = 'safe:';
+const LOCAL_CREDENTIAL_PREFIX = 'local:';
 
 type GitResult = { stdout: string; stderr: string; code: number };
 
@@ -21,6 +27,8 @@ export type RepositoryConnection = {
   repositoryPath: string;
   remoteUrl?: string;
   displayName: string;
+  privateRemote?: boolean;
+  hasStoredCredentials?: boolean;
 };
 
 type ConnectionSettings = {
@@ -31,6 +39,7 @@ type ConnectionSettings = {
 
 type CredentialSettings = {
   version: 1;
+  privateRemotes: Record<string, boolean>;
   credentials: Record<string, string>;
 };
 
@@ -244,8 +253,12 @@ export class GitWorkspaceService {
     return path.join(app.getPath('userData'), SETTINGS_FILE);
   }
 
-  private get credentialsPath(): string {
-    return path.join(app.getPath('userData'), CREDENTIALS_FILE);
+  private get legacyCredentialsPath(): string {
+    return path.join(app.getPath('userData'), LEGACY_CREDENTIALS_FILE);
+  }
+
+  private credentialsPath(repositoryPath: string): string {
+    return path.join(repositoryPath, CREDENTIALS_FILE);
   }
 
   async restoreConnection(): Promise<RepositoryConnection | null> {
@@ -253,7 +266,11 @@ export class GitWorkspaceService {
     const saved = settings.active;
     if (!saved || !(await exists(path.join(saved.repositoryPath, '.git')))) return null;
     const connection = await this.sanitizeConnection(saved);
-    if (connection.remoteUrl !== saved.remoteUrl) return this.remember(connection);
+    if (connection.remoteUrl !== saved.remoteUrl
+      || connection.privateRemote !== saved.privateRemote
+      || connection.hasStoredCredentials !== saved.hasStoredCredentials) {
+      return this.remember(connection);
+    }
     this.connection = connection;
     return connection;
   }
@@ -271,7 +288,11 @@ export class GitWorkspaceService {
       : null;
     if (available.length !== settings.recent.length
       || active?.remoteUrl !== settings.active?.remoteUrl
-      || available.some((item, index) => item.remoteUrl !== settings.recent[index]?.remoteUrl)) {
+      || active?.privateRemote !== settings.active?.privateRemote
+      || active?.hasStoredCredentials !== settings.active?.hasStoredCredentials
+      || available.some((item, index) => item.remoteUrl !== settings.recent[index]?.remoteUrl
+        || item.privateRemote !== settings.recent[index]?.privateRemote
+        || item.hasStoredCredentials !== settings.recent[index]?.hasStoredCredentials)) {
       await this.writeSettings({ ...settings, active, recent: available });
     }
     return available;
@@ -318,15 +339,16 @@ export class GitWorkspaceService {
     return this.remember({ repositoryPath, displayName: name });
   }
 
-  async connectRemote(remoteUrl: string, suppliedCredentials?: GitCredentials): Promise<RepositoryConnection> {
-    const prepared = prepareRemote(remoteUrl, suppliedCredentials);
+  async connectRemote(remoteUrl: string, suppliedCredentials?: GitCredentials | null): Promise<RepositoryConnection> {
+    const clearCredentials = suppliedCredentials === null;
+    const prepared = prepareRemote(remoteUrl, suppliedCredentials ?? undefined);
     const url = prepared.url;
     if (!url) throw new Error('Enter a Git repository URL.');
-    const credentials = prepared.credentials ?? await this.getCredentials(url);
 
     const key = createHash('sha256').update(url).digest('hex').slice(0, 12);
     const root = path.join(app.getPath('userData'), 'repositories');
     const repositoryPath = path.join(root, `${repositoryName(url)}-${key}`);
+    const credentials = prepared.credentials ?? await this.getCredentials(repositoryPath, url);
     await fs.mkdir(root, { recursive: true });
     const repositoryAlreadyExists = await exists(path.join(repositoryPath, '.git'));
 
@@ -346,18 +368,29 @@ export class GitWorkspaceService {
       throw new Error(friendlyGitError(error));
     }
 
-    if (prepared.credentials) await this.storeCredentials(url, prepared.credentials);
-    return this.remember({ repositoryPath, remoteUrl: url, displayName: repositoryName(url) });
+    if (clearCredentials) {
+      await this.removeCredentials(repositoryPath, url);
+    } else if (credentials) {
+      await this.storeCredentials(repositoryPath, url, credentials);
+    }
+    return this.remember({
+      repositoryPath,
+      remoteUrl: url,
+      displayName: repositoryName(url),
+      privateRemote: clearCredentials ? false : Boolean(credentials),
+      hasStoredCredentials: clearCredentials ? false : Boolean(credentials),
+    });
   }
 
-  async addRemote(remoteUrl: string, suppliedCredentials?: GitCredentials): Promise<RepositoryConnection> {
+  async addRemote(remoteUrl: string, suppliedCredentials?: GitCredentials | null): Promise<RepositoryConnection> {
     const repository = this.requireConnection();
-    const prepared = prepareRemote(remoteUrl, suppliedCredentials);
+    const clearCredentials = suppliedCredentials === null;
+    const prepared = prepareRemote(remoteUrl, suppliedCredentials ?? undefined);
     const url = prepared.url;
     if (!url) throw new Error('Enter a Git repository URL.');
+    const credentials = prepared.credentials ?? await this.getCredentials(repository.repositoryPath, url);
 
     try {
-      const credentials = prepared.credentials ?? await this.getCredentials(url);
       const reachable = await runGit(repository.repositoryPath, ['ls-remote', '--', url], true, credentials);
       if (reachable.code !== 0) throw new Error(reachable.stderr || reachable.stdout);
 
@@ -370,8 +403,20 @@ export class GitWorkspaceService {
     } catch (error) {
       throw new Error(friendlyGitError(error));
     }
-    if (prepared.credentials) await this.storeCredentials(url, prepared.credentials);
-    return this.remember({ ...repository, remoteUrl: url });
+    if (repository.remoteUrl && repository.remoteUrl !== url) {
+      await this.removeCredentials(repository.repositoryPath, repository.remoteUrl);
+    }
+    if (clearCredentials) {
+      await this.removeCredentials(repository.repositoryPath, url);
+    } else if (credentials) {
+      await this.storeCredentials(repository.repositoryPath, url, credentials);
+    }
+    return this.remember({
+      ...repository,
+      remoteUrl: url,
+      privateRemote: clearCredentials ? false : Boolean(repository.privateRemote || credentials),
+      hasStoredCredentials: clearCredentials ? false : Boolean(credentials),
+    });
   }
 
   async connectLocal(repositoryPath: string): Promise<RepositoryConnection> {
@@ -383,6 +428,8 @@ export class GitWorkspaceService {
       repositoryPath,
       remoteUrl: remote?.url,
       displayName: repositoryName(repositoryPath),
+      privateRemote: Boolean(remote?.privateRemote),
+      hasStoredCredentials: Boolean(remote?.credentials),
     });
   }
 
@@ -418,6 +465,7 @@ export class GitWorkspaceService {
     await fs.rename(temporary, destination);
 
     try {
+      if (await exists(this.credentialsPath(cwd))) await this.ensureCredentialFileIgnored(cwd);
       await runGit(cwd, ['add', '-A', '--', DATA_DIRECTORY]);
       const changed = await runGit(cwd, ['diff', '--cached', '--quiet', '--', DATA_DIRECTORY], true);
       if (changed.code !== 0) {
@@ -503,9 +551,18 @@ export class GitWorkspaceService {
     if (conflicts.length === 0) throw new Error('There are no conflicts to resolve.');
 
     const checkoutFlag = strategy === 'local' ? '--ours' : '--theirs';
+    const selectedStage = strategy === 'local' ? '2' : '3';
     for (const file of conflicts) {
-      await runGit(cwd, ['checkout', checkoutFlag, '--', file]);
-      await runGit(cwd, ['add', '--', file]);
+      const stages = await runGit(cwd, ['ls-files', '--stage', '--', file], true);
+      const selectedVersionExists = stages.stdout
+        .split(/\r?\n/)
+        .some((entry) => new RegExp(`^\\d+\\s+[0-9a-f]+\\s+${selectedStage}\\t`).test(entry));
+      if (selectedVersionExists) {
+        await runGit(cwd, ['checkout', checkoutFlag, '--', file]);
+        await runGit(cwd, ['add', '--', file]);
+      } else {
+        await runGit(cwd, ['rm', '--force', '--ignore-unmatch', '--', file]);
+      }
     }
     await this.commit(cwd, `Resolve workspace conflict · keep ${strategy} version`);
 
@@ -595,18 +652,30 @@ export class GitWorkspaceService {
   }
 
   private async sanitizeConnection(connection: RepositoryConnection): Promise<RepositoryConnection> {
-    if (!connection.remoteUrl) return connection;
+    if (!connection.remoteUrl) {
+      return { ...connection, privateRemote: false, hasStoredCredentials: false };
+    }
     const prepared = prepareRemote(connection.remoteUrl);
-    if (prepared.url === connection.remoteUrl) return connection;
-
-    if (prepared.credentials) await this.storeCredentials(prepared.url, prepared.credentials);
-    await runGit(connection.repositoryPath, ['remote', 'set-url', 'origin', prepared.url], true);
-    return { ...connection, remoteUrl: prepared.url };
+    if (prepared.url !== connection.remoteUrl) {
+      await runGit(connection.repositoryPath, ['remote', 'set-url', 'origin', prepared.url], true);
+    }
+    const credentials = prepared.credentials
+      ?? await this.getCredentials(connection.repositoryPath, prepared.url);
+    if (credentials) {
+      await this.storeCredentials(connection.repositoryPath, prepared.url, credentials);
+    }
+    const privateRemote = await this.isPrivateRemote(connection.repositoryPath, prepared.url);
+    return {
+      ...connection,
+      remoteUrl: prepared.url,
+      privateRemote: Boolean(connection.privateRemote || credentials || privateRemote),
+      hasStoredCredentials: Boolean(credentials),
+    };
   }
 
   private async getRemoteAccess(
     repositoryPath: string,
-  ): Promise<{ url: string; credentials?: GitCredentials } | null> {
+  ): Promise<{ url: string; credentials?: GitCredentials; privateRemote: boolean } | null> {
     const remote = await runGit(repositoryPath, ['remote', 'get-url', 'origin'], true);
     if (remote.code !== 0 || !remote.stdout) return null;
 
@@ -614,60 +683,165 @@ export class GitWorkspaceService {
     if (prepared.url !== remote.stdout) {
       await runGit(repositoryPath, ['remote', 'set-url', 'origin', prepared.url]);
     }
-    if (prepared.credentials) await this.storeCredentials(prepared.url, prepared.credentials);
+    const credentials = prepared.credentials ?? await this.getCredentials(repositoryPath, prepared.url);
+    if (credentials) await this.storeCredentials(repositoryPath, prepared.url, credentials);
 
     return {
       url: prepared.url,
-      credentials: prepared.credentials ?? await this.getCredentials(prepared.url),
+      credentials,
+      privateRemote: Boolean(credentials || await this.isPrivateRemote(repositoryPath, prepared.url)),
     };
   }
 
-  private async readCredentialSettings(): Promise<CredentialSettings> {
-    const raw = await readJson(this.credentialsPath);
-    if (!raw || typeof raw !== 'object') return { version: 1, credentials: {} };
+  private async ensureIgnoreEntry(target: string, entry: string): Promise<void> {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    let content = '';
+    try {
+      content = await fs.readFile(target, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const entries = content.split(/\r?\n/).map((line) => line.trim());
+    if (entries.includes(entry)) return;
+    const separator = content && !content.endsWith('\n') ? '\n' : '';
+    await fs.writeFile(target, `${content}${separator}${entry}\n`, 'utf8');
+  }
+
+  private async ensureCredentialFileIgnored(repositoryPath: string): Promise<void> {
+    await this.ensureIgnoreEntry(
+      path.join(repositoryPath, CREDENTIALS_IGNORE_FILE),
+      CREDENTIALS_IGNORE_ENTRY,
+    );
+
+    // Keep a second, local-only rule that cannot be removed by a remote merge.
+    const gitExclude = await runGit(repositoryPath, ['rev-parse', '--git-path', 'info/exclude'], true);
+    if (gitExclude.code === 0 && gitExclude.stdout) {
+      const excludePath = path.isAbsolute(gitExclude.stdout)
+        ? gitExclude.stdout
+        : path.resolve(repositoryPath, gitExclude.stdout);
+      try {
+        await this.ensureIgnoreEntry(excludePath, LOCAL_CREDENTIALS_IGNORE_ENTRY);
+      } catch {
+        // The committed workspace ignore rule remains the portable safeguard.
+      }
+    }
+
+    // If an older version ever staged this file, remove it from the index while
+    // preserving the encrypted workspace copy.
+    await runGit(repositoryPath, ['rm', '--cached', '--ignore-unmatch', '--', CREDENTIALS_FILE], true);
+  }
+
+  private async readCredentialSettings(target: string): Promise<CredentialSettings> {
+    const raw = await readJson(target);
+    if (!raw || typeof raw !== 'object') return { version: 1, privateRemotes: {}, credentials: {} };
     const candidate = raw as Partial<CredentialSettings>;
     if (candidate.version !== 1 || !candidate.credentials || typeof candidate.credentials !== 'object') {
-      return { version: 1, credentials: {} };
+      return { version: 1, privateRemotes: {}, credentials: {} };
     }
+    const privateRemotes = candidate.privateRemotes && typeof candidate.privateRemotes === 'object'
+      ? Object.fromEntries(Object.entries(candidate.privateRemotes).filter(([, enabled]) => enabled === true))
+      : {};
     const credentials = Object.fromEntries(
       Object.entries(candidate.credentials).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
     );
-    return { version: 1, credentials };
+    return { version: 1, privateRemotes, credentials };
   }
 
-  private async getCredentials(remoteUrl: string): Promise<GitCredentials | undefined> {
-    const key = credentialKey(remoteUrl);
-    const active = this.sessionCredentials.get(key);
-    if (active) return active;
-    if (!safeStorage.isEncryptionAvailable()) return undefined;
-
+  private async isPrivateRemote(repositoryPath: string, remoteUrl: string): Promise<boolean> {
     try {
-      const settings = await this.readCredentialSettings();
-      const encrypted = settings.credentials[key];
-      if (!encrypted) return undefined;
-      const parsed = JSON.parse(safeStorage.decryptString(Buffer.from(encrypted, 'base64'))) as GitCredentials;
-      const credentials = normalizeCredentials(parsed);
-      if (credentials) this.sessionCredentials.set(key, credentials);
-      return credentials;
+      const settings = await this.readCredentialSettings(this.credentialsPath(repositoryPath));
+      return settings.privateRemotes[credentialKey(remoteUrl)] === true;
     } catch {
-      return undefined;
+      return false;
     }
   }
 
-  private async storeCredentials(remoteUrl: string, suppliedCredentials: GitCredentials): Promise<void> {
+  private decodeStoredCredentials(stored: string): GitCredentials | undefined {
+    let serialized: string;
+    if (stored.startsWith(LOCAL_CREDENTIAL_PREFIX)) {
+      serialized = Buffer.from(stored.slice(LOCAL_CREDENTIAL_PREFIX.length), 'base64').toString('utf8');
+    } else {
+      if (!safeStorage.isEncryptionAvailable()) return undefined;
+      const encrypted = stored.startsWith(SAFE_CREDENTIAL_PREFIX)
+        ? stored.slice(SAFE_CREDENTIAL_PREFIX.length)
+        : stored; // Original app-data format before storage prefixes.
+      serialized = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+    }
+    return normalizeCredentials(JSON.parse(serialized) as GitCredentials);
+  }
+
+  private async getCredentials(
+    repositoryPath: string,
+    remoteUrl: string,
+  ): Promise<GitCredentials | undefined> {
+    const key = credentialKey(remoteUrl);
+    const sessionKey = credentialKey(`${path.resolve(repositoryPath)}\0${remoteUrl}`);
+    const active = this.sessionCredentials.get(sessionKey);
+    if (active) return active;
+
+    for (const target of [this.credentialsPath(repositoryPath), this.legacyCredentialsPath]) {
+      try {
+        const settings = await this.readCredentialSettings(target);
+        const stored = settings.credentials[key];
+        if (!stored) continue;
+        const credentials = this.decodeStoredCredentials(stored);
+        if (!credentials) continue;
+        this.sessionCredentials.set(sessionKey, credentials);
+        return credentials;
+      } catch {
+        // Try the legacy app-data store if the workspace copy is unavailable.
+      }
+    }
+    return undefined;
+  }
+
+  private async removeCredentials(repositoryPath: string, remoteUrl: string): Promise<void> {
+    const key = credentialKey(remoteUrl);
+    const sessionKey = credentialKey(`${path.resolve(repositoryPath)}\0${remoteUrl}`);
+    this.sessionCredentials.delete(sessionKey);
+
+    for (const target of [this.credentialsPath(repositoryPath), this.legacyCredentialsPath]) {
+      try {
+        const settings = await this.readCredentialSettings(target);
+        if (!settings.credentials[key] && !settings.privateRemotes[key]) continue;
+        delete settings.credentials[key];
+        delete settings.privateRemotes[key];
+        if (target === this.credentialsPath(repositoryPath)
+          && Object.keys(settings.credentials).length === 0
+          && Object.keys(settings.privateRemotes).length === 0) {
+          await fs.rm(target, { force: true });
+        } else {
+          await fs.writeFile(target, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
+          await fs.chmod(target, 0o600);
+        }
+      } catch {
+        // A missing or unreadable credential store is already effectively cleared.
+      }
+    }
+  }
+
+  private async storeCredentials(
+    repositoryPath: string,
+    remoteUrl: string,
+    suppliedCredentials: GitCredentials,
+  ): Promise<void> {
     const credentials = normalizeCredentials(suppliedCredentials);
     if (!credentials) return;
     const key = credentialKey(remoteUrl);
-    this.sessionCredentials.set(key, credentials);
-    if (!safeStorage.isEncryptionAvailable()) return;
+    const sessionKey = credentialKey(`${path.resolve(repositoryPath)}\0${remoteUrl}`);
+    this.sessionCredentials.set(sessionKey, credentials);
 
     try {
-      const settings = await this.readCredentialSettings();
-      settings.credentials[key] = safeStorage
-        .encryptString(JSON.stringify(credentials))
-        .toString('base64');
-      await fs.mkdir(path.dirname(this.credentialsPath), { recursive: true });
-      await fs.writeFile(this.credentialsPath, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
+      await this.ensureCredentialFileIgnored(repositoryPath);
+      const target = this.credentialsPath(repositoryPath);
+      const settings = await this.readCredentialSettings(target);
+      settings.privateRemotes[key] = true;
+      const serialized = JSON.stringify(credentials);
+      settings.credentials[key] = safeStorage.isEncryptionAvailable()
+        ? `${SAFE_CREDENTIAL_PREFIX}${safeStorage.encryptString(serialized).toString('base64')}`
+        : `${LOCAL_CREDENTIAL_PREFIX}${Buffer.from(serialized, 'utf8').toString('base64')}`;
+      await fs.writeFile(target, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
+      await fs.chmod(target, 0o600);
     } catch {
       // Keep the credential in memory when secure persistence is unavailable.
     }

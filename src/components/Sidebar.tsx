@@ -11,6 +11,7 @@ import {
   FolderOpen,
   LogOut,
   Paperclip,
+  PenTool,
   Plus,
   RefreshCw,
   Settings2,
@@ -104,6 +105,7 @@ export function Sidebar({
         <p className="nav-label">{t('Workspace')}</p>
         <button className={`nav-item ${activeView === 'board' || activeView === 'list' ? 'active' : ''}`} onClick={() => onChangeView('board')}><Columns3 size={17} /><span>{t('Project work')}</span></button>
         <button className={`nav-item ${activeView === 'timeline' ? 'active' : ''}`} onClick={() => onChangeView('timeline')}><CalendarRange size={17} /><span>{t('Timeline')}</span></button>
+        <button className={`nav-item canvas-nav-item ${activeView === 'canvas' ? 'active' : ''}`} onClick={() => onChangeView('canvas')}><PenTool size={17} /><span>{t('Canvas')}</span></button>
         <button className={`nav-item ${activeView === 'roadmap' ? 'active' : ''}`} onClick={() => onChangeView('roadmap')}><ChartNoAxesGantt size={17} /><span>{t('Roadmap')}</span></button>
         <button className={`nav-item ${activeView === 'files' ? 'active' : ''}`} onClick={() => onChangeView('files')}><Paperclip size={17} /><span>{t('Files')}</span><em>{Object.keys(document.resources.attachments).length}</em></button>
       </nav>

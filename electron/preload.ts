@@ -13,10 +13,10 @@ contextBridge.exposeInMainWorld('kanbanos', {
     removeRecent: (repositoryPath: string) => ipcRenderer.invoke('repository:remove-recent', repositoryPath),
     createLocal: (displayName: string, language: 'en' | 'he' = 'en') =>
       ipcRenderer.invoke('repository:create-local', displayName, language),
-    connectRemote: (remoteUrl: string, credentials?: GitCredentials) =>
+    connectRemote: (remoteUrl: string, credentials?: GitCredentials | null) =>
       ipcRenderer.invoke('repository:connect-remote', remoteUrl, credentials),
     chooseLocal: (language: 'en' | 'he' = 'en') => ipcRenderer.invoke('repository:choose-local', language),
-    addRemote: (remoteUrl: string, credentials?: GitCredentials) =>
+    addRemote: (remoteUrl: string, credentials?: GitCredentials | null) =>
       ipcRenderer.invoke('repository:add-remote', remoteUrl, credentials),
     disconnect: () => ipcRenderer.invoke('repository:disconnect'),
     reveal: () => ipcRenderer.invoke('repository:reveal'),

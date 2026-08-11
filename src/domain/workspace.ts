@@ -1,8 +1,17 @@
 import type {
+  CanvasConnection,
+  CanvasNode,
+  CanvasNodeType,
+  CanvasPoint,
+  CanvasProject,
+  CanvasStroke,
+  CanvasViewport,
+  CanvasRelation,
   KanbanColumn,
   KanbanProjectSettings,
   Priority,
   Project,
+  RoadmapHorizon,
   WorkItem,
   WorkspaceAction,
   WorkspaceDocument,
@@ -17,8 +26,85 @@ export const DEFAULT_COLUMNS: KanbanColumn[] = [
   { id: 'done', title: 'Done', color: '#43a882' },
 ];
 
+export const ROADMAP_HORIZONS: RoadmapHorizon[] = ['Now', 'Next', 'Later'];
+export const CANVAS_NODE_COLORS = ['#ffdf72', '#ff9e9e', '#9ee8cf', '#a9c7ff', '#c8b5ff', '#f7b4db'];
+
+export function createCanvasProject(): CanvasProject {
+  return {
+    nodes: {},
+    connections: {},
+    strokes: {},
+    viewport: { x: 0, y: 0, zoom: 1 },
+  };
+}
+
+const CANVAS_NODE_SIZES: Record<CanvasNodeType, { width: number; height: number }> = {
+  note: { width: 260, height: 220 },
+  task: { width: 300, height: 174 },
+  file: { width: 276, height: 138 },
+  shape: { width: 230, height: 160 },
+  diagram: { width: 280, height: 210 },
+};
+
+export function createCanvasNode(
+  type: CanvasNodeType,
+  point: CanvasPoint,
+  options: Partial<Pick<CanvasNode, 'width' | 'height' | 'rotation' | 'zIndex' | 'color' | 'content' | 'taskId' | 'attachmentId' | 'shape' | 'diagramKind'>> = {},
+): CanvasNode {
+  const timestamp = now();
+  const size = CANVAS_NODE_SIZES[type];
+  return {
+    id: id(),
+    type,
+    x: point.x,
+    y: point.y,
+    width: options.width ?? size.width,
+    height: options.height ?? size.height,
+    rotation: options.rotation ?? 0,
+    zIndex: options.zIndex ?? 1,
+    color: options.color ?? (type === 'note' ? CANVAS_NODE_COLORS[0] : type === 'shape' ? CANVAS_NODE_COLORS[4] : '#6759cf'),
+    content: options.content ?? '',
+    taskId: options.taskId,
+    attachmentId: options.attachmentId,
+    shape: options.shape ?? (type === 'shape' ? 'rectangle' : undefined),
+    diagramKind: options.diagramKind,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+export function createCanvasConnection(
+  fromNodeId: string,
+  toNodeId: string,
+  color = '#7568d0',
+  relation: CanvasRelation = 'association',
+): CanvasConnection {
+  return { id: id(), fromNodeId, toNodeId, color, relation, label: '', sourceLabel: '', targetLabel: '', createdAt: now() };
+}
+
+export function createCanvasStroke(points: CanvasPoint[], color = '#5147a6', width = 4): CanvasStroke {
+  return { id: id(), points, color, width, createdAt: now() };
+}
+
+function normalizeRoadmapHorizonOrder(order?: RoadmapHorizon[]): RoadmapHorizon[] {
+  return Array.from(new Set([
+    ...(order ?? []).filter((horizon) => ROADMAP_HORIZONS.includes(horizon)),
+    ...ROADMAP_HORIZONS,
+  ]));
+}
+
 const now = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
+
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
 
 export function createProject(name: string, color: string, description = ''): Project {
   return { id: id(), name, description, color, createdAt: now(), archived: false };
@@ -33,7 +119,7 @@ export function createWorkItem(
   columnId: string,
   title: string,
   rank: number,
-  options: Partial<Pick<WorkItem, 'description' | 'priority' | 'estimateMinutes' | 'startDate' | 'dueDate' | 'dependencyIds' | 'labels' | 'assignee' | 'subtasks'>> = {},
+  options: Partial<Pick<WorkItem, 'description' | 'priority' | 'estimateMinutes' | 'startDate' | 'dueDate' | 'dependencyIds' | 'links' | 'labels' | 'assignee' | 'subtasks'>> = {},
 ): WorkItem {
   const timestamp = now();
   return {
@@ -48,6 +134,7 @@ export function createWorkItem(
     dueDate: options.dueDate,
     dependencyIds: options.dependencyIds ?? [],
     attachmentIds: [],
+    links: options.links ?? [],
     labels: options.labels ?? [],
     assignee: options.assignee,
     subtasks: options.subtasks ?? [],
@@ -88,9 +175,13 @@ export function createEmptyWorkspace(
         version: 1,
         projects: { [project.id]: createProjectSettings() },
       },
+      canvas: {
+        version: 1,
+        projects: { [project.id]: createCanvasProject() },
+      },
     },
     resources: { attachments: {} },
-    preferences: { activeProjectId: project.id },
+    preferences: { activeProjectId: project.id, roadmapHorizonOrder: [...ROADMAP_HORIZONS], timelineLayout: 'tasks', collapsedKanbanSubtaskItemIds: [] },
   };
 }
 
@@ -195,9 +286,13 @@ export function createDefaultWorkspace(workspaceName = 'My workspace'): Workspac
         version: 1,
         projects: Object.fromEntries(projects.map((project) => [project.id, createProjectSettings()])),
       },
+      canvas: {
+        version: 1,
+        projects: Object.fromEntries(projects.map((project) => [project.id, createCanvasProject()])),
+      },
     },
     resources: { attachments: {} },
-    preferences: { activeProjectId: product.id },
+    preferences: { activeProjectId: product.id, roadmapHorizonOrder: [...ROADMAP_HORIZONS], timelineLayout: 'tasks', collapsedKanbanSubtaskItemIds: [] },
   };
 }
 
@@ -221,6 +316,16 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
       Array.isArray(item.labels) &&
       Array.isArray(item.subtasks) &&
       (item.attachmentIds === undefined || Array.isArray(item.attachmentIds)) &&
+      (item.links === undefined || (
+        Array.isArray(item.links) && item.links.every((link) =>
+          Boolean(link) &&
+          typeof link.id === 'string' &&
+          (link.title === undefined || typeof link.title === 'string') &&
+          (link.description === undefined || typeof link.description === 'string') &&
+          isHttpUrl(link.url) &&
+          typeof link.createdAt === 'string'
+        )
+      )) &&
       typeof item.moduleData?.kanban?.columnId === 'string' &&
       typeof item.moduleData?.kanban?.rank === 'number',
     );
@@ -241,11 +346,58 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
       Boolean(attachment) &&
       typeof attachment.id === 'string' &&
       typeof attachment.name === 'string' &&
+      (attachment.title === undefined || typeof attachment.title === 'string') &&
+      (attachment.description === undefined || typeof attachment.description === 'string') &&
       (attachment.kind === 'file' || attachment.kind === 'folder') &&
       typeof attachment.relativePath === 'string' &&
       typeof attachment.sizeBytes === 'number' &&
       typeof attachment.fileCount === 'number' &&
       typeof attachment.createdAt === 'string',
+    )
+  );
+  const canvasCandidate = candidate.modules?.canvas as WorkspaceDocument['modules']['canvas'] | undefined;
+  const canvasValid = canvasCandidate === undefined || (
+    canvasCandidate.version === 1 &&
+    Boolean(canvasCandidate.projects) &&
+    typeof canvasCandidate.projects === 'object' &&
+    !Array.isArray(canvasCandidate.projects) &&
+    Object.values(canvasCandidate.projects).every((canvasProject) =>
+      Boolean(canvasProject) &&
+      typeof canvasProject.nodes === 'object' &&
+      !Array.isArray(canvasProject.nodes) &&
+      Object.values(canvasProject.nodes).every((node) =>
+        Boolean(node) &&
+        typeof node.id === 'string' &&
+        ['note', 'task', 'file', 'shape', 'diagram'].includes(node.type) &&
+        [node.x, node.y, node.width, node.height, node.rotation, node.zIndex].every(Number.isFinite) &&
+        typeof node.color === 'string' &&
+        typeof node.content === 'string'
+      ) &&
+      typeof canvasProject.connections === 'object' &&
+      !Array.isArray(canvasProject.connections) &&
+      Object.values(canvasProject.connections).every((connection) =>
+        Boolean(connection) &&
+        typeof connection.id === 'string' &&
+        typeof connection.fromNodeId === 'string' &&
+        typeof connection.toNodeId === 'string' &&
+        typeof connection.color === 'string' &&
+        (connection.relation === undefined || ['association', 'dependency', 'inheritance', 'realization', 'aggregation', 'composition', 'message', 'data-flow'].includes(connection.relation)) &&
+        (connection.label === undefined || typeof connection.label === 'string') &&
+        (connection.sourceLabel === undefined || typeof connection.sourceLabel === 'string') &&
+        (connection.targetLabel === undefined || typeof connection.targetLabel === 'string')
+      ) &&
+      typeof canvasProject.strokes === 'object' &&
+      !Array.isArray(canvasProject.strokes) &&
+      Object.values(canvasProject.strokes).every((stroke) =>
+        Boolean(stroke) &&
+        typeof stroke.id === 'string' &&
+        Array.isArray(stroke.points) &&
+        stroke.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)) &&
+        typeof stroke.color === 'string' &&
+        Number.isFinite(stroke.width)
+      ) &&
+      Boolean(canvasProject.viewport) &&
+      [canvasProject.viewport.x, canvasProject.viewport.y, canvasProject.viewport.zoom].every(Number.isFinite)
     )
   );
 
@@ -255,21 +407,66 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
     projectsValid &&
     itemsValid &&
     kanbanValid &&
+    canvasValid &&
     attachmentsValid &&
-    typeof candidate.preferences?.activeProjectId === 'string'
+    typeof candidate.preferences?.activeProjectId === 'string' &&
+    (candidate.preferences.roadmapHorizonOrder === undefined || (
+      Array.isArray(candidate.preferences.roadmapHorizonOrder) &&
+      candidate.preferences.roadmapHorizonOrder.every((horizon) => ROADMAP_HORIZONS.includes(horizon))
+    )) &&
+    (candidate.preferences.timelineLayout === undefined || candidate.preferences.timelineLayout === 'tasks' || candidate.preferences.timelineLayout === 'compact') &&
+    (candidate.preferences.collapsedKanbanSubtaskItemIds === undefined || (
+      Array.isArray(candidate.preferences.collapsedKanbanSubtaskItemIds) &&
+      candidate.preferences.collapsedKanbanSubtaskItemIds.every((itemId) => typeof itemId === 'string')
+    ))
   );
 }
 
 export function normalizeWorkspaceDocument(document: WorkspaceDocument): WorkspaceDocument {
+  const storedCanvas = document.modules.canvas as WorkspaceDocument['modules']['canvas'] | undefined;
+  const canvasProjects = Object.fromEntries(document.projects.map((project) => {
+    const storedProject = storedCanvas?.projects?.[project.id];
+    const nodes = storedProject?.nodes ?? {};
+    const connections = Object.fromEntries(Object.entries(storedProject?.connections ?? {})
+      .filter(([, connection]) => Boolean(nodes[connection.fromNodeId]) && Boolean(nodes[connection.toNodeId]))
+      .map(([connectionId, connection]) => [connectionId, {
+        ...connection,
+        relation: connection.relation ?? 'association',
+        label: connection.label ?? '',
+        sourceLabel: connection.sourceLabel ?? '',
+        targetLabel: connection.targetLabel ?? '',
+      }]));
+    const viewport = storedProject?.viewport;
+    return [project.id, {
+      nodes,
+      connections,
+      strokes: storedProject?.strokes ?? {},
+      viewport: viewport && Number.isFinite(viewport.x) && Number.isFinite(viewport.y) && Number.isFinite(viewport.zoom)
+        ? { ...viewport, zoom: Math.max(0.15, Math.min(2.5, viewport.zoom)) }
+        : createCanvasProject().viewport,
+    } satisfies CanvasProject];
+  }));
   return {
     ...document,
     items: Object.fromEntries(Object.entries(document.items).map(([itemId, item]) => [
       itemId,
-      { ...item, dependencyIds: item.dependencyIds ?? [], attachmentIds: item.attachmentIds ?? [] },
+      { ...item, dependencyIds: item.dependencyIds ?? [], attachmentIds: item.attachmentIds ?? [], links: item.links ?? [] },
     ])),
+    modules: {
+      ...document.modules,
+      canvas: { version: 1, projects: canvasProjects },
+    },
     resources: {
       ...(document.resources ?? {}),
       attachments: document.resources?.attachments ?? {},
+    },
+    preferences: {
+      ...document.preferences,
+      roadmapHorizonOrder: normalizeRoadmapHorizonOrder(document.preferences.roadmapHorizonOrder),
+      timelineLayout: document.preferences.timelineLayout === 'compact' ? 'compact' : 'tasks',
+      collapsedKanbanSubtaskItemIds: Array.from(new Set(
+        (document.preferences.collapsedKanbanSubtaskItemIds ?? []).filter((itemId) => Boolean(document.items[itemId])),
+      )),
     },
   };
 }
@@ -278,6 +475,44 @@ function touch(document: WorkspaceDocument): WorkspaceDocument {
   return {
     ...document,
     workspace: { ...document.workspace, updatedAt: now() },
+  };
+}
+
+function withCanvasProject(document: WorkspaceDocument, projectId: string, canvasProject: CanvasProject): WorkspaceDocument {
+  return {
+    ...document,
+    modules: {
+      ...document.modules,
+      canvas: {
+        version: 1,
+        projects: { ...document.modules.canvas.projects, [projectId]: canvasProject },
+      },
+    },
+  };
+}
+
+function removeCanvasReferences(
+  document: WorkspaceDocument,
+  matches: (node: CanvasNode) => boolean,
+): WorkspaceDocument['modules']['canvas'] {
+  const projects = Object.fromEntries(Object.entries(document.modules.canvas.projects).map(([projectId, canvasProject]) => {
+    const removedIds = new Set(Object.values(canvasProject.nodes).filter(matches).map((node) => node.id));
+    if (removedIds.size === 0) return [projectId, canvasProject];
+    return [projectId, {
+      ...canvasProject,
+      nodes: Object.fromEntries(Object.entries(canvasProject.nodes).filter(([nodeId]) => !removedIds.has(nodeId))),
+      connections: Object.fromEntries(Object.entries(canvasProject.connections).filter(([, connection]) =>
+        !removedIds.has(connection.fromNodeId) && !removedIds.has(connection.toNodeId))),
+    }];
+  }));
+  return { version: 1, projects };
+}
+
+function normalizedCanvasViewport(viewport: CanvasViewport): CanvasViewport {
+  return {
+    x: Number.isFinite(viewport.x) ? viewport.x : 0,
+    y: Number.isFinite(viewport.y) ? viewport.y : 0,
+    zoom: Math.max(0.15, Math.min(2.5, Number.isFinite(viewport.zoom) ? viewport.zoom : 1)),
   };
 }
 
@@ -291,6 +526,39 @@ export function workspaceReducer(
     return { ...document, preferences: { ...document.preferences, activeProjectId: action.projectId } };
   }
 
+  if (action.type === 'setTimelineLayout') {
+    if (document.preferences.timelineLayout === action.layout) return document;
+    return touch({
+      ...document,
+      preferences: { ...document.preferences, timelineLayout: action.layout },
+    });
+  }
+
+  if (action.type === 'setKanbanSubtasksCollapsed') {
+    if (!document.items[action.itemId]) return document;
+    const collapsedItemIds = new Set(document.preferences.collapsedKanbanSubtaskItemIds ?? []);
+    if (collapsedItemIds.has(action.itemId) === action.collapsed) return document;
+    if (action.collapsed) collapsedItemIds.add(action.itemId);
+    else collapsedItemIds.delete(action.itemId);
+    return touch({
+      ...document,
+      preferences: {
+        ...document.preferences,
+        collapsedKanbanSubtaskItemIds: Array.from(collapsedItemIds),
+      },
+    });
+  }
+
+  if (action.type === 'reorderRoadmapColumns') {
+    return touch({
+      ...document,
+      preferences: {
+        ...document.preferences,
+        roadmapHorizonOrder: normalizeRoadmapHorizonOrder(action.horizons),
+      },
+    });
+  }
+
   if (action.type === 'addProject') {
     return touch({
       ...document,
@@ -302,6 +570,13 @@ export function workspaceReducer(
           projects: {
             ...document.modules.kanban.projects,
             [action.project.id]: action.settings,
+          },
+        },
+        canvas: {
+          version: 1,
+          projects: {
+            ...document.modules.canvas.projects,
+            [action.project.id]: createCanvasProject(),
           },
         },
       },
@@ -353,6 +628,21 @@ export function workspaceReducer(
     });
   }
 
+  if (action.type === 'updateAttachment') {
+    const attachment = document.resources.attachments[action.attachmentId];
+    if (!attachment) return document;
+    return touch({
+      ...document,
+      resources: {
+        ...document.resources,
+        attachments: {
+          ...document.resources.attachments,
+          [attachment.id]: { ...attachment, ...action.changes },
+        },
+      },
+    });
+  }
+
   if (action.type === 'removeAttachment') {
     const attachments = { ...document.resources.attachments };
     if (!attachments[action.attachmentId]) return document;
@@ -363,7 +653,12 @@ export function workspaceReducer(
         ? { ...item, attachmentIds: item.attachmentIds.filter((attachmentId) => attachmentId !== action.attachmentId), updatedAt: now() }
         : item,
     ]));
-    return touch({ ...document, items, resources: { ...document.resources, attachments } });
+    return touch({
+      ...document,
+      items,
+      modules: { ...document.modules, canvas: removeCanvasReferences(document, (node) => node.attachmentId === action.attachmentId) },
+      resources: { ...document.resources, attachments },
+    });
   }
 
   if (action.type === 'deleteItem') {
@@ -381,7 +676,43 @@ export function workspaceReducer(
     });
     const attachments = { ...document.resources.attachments };
     deletedAttachmentIds.forEach((attachmentId) => delete attachments[attachmentId]);
-    return touch({ ...document, items, resources: { ...document.resources, attachments } });
+    return touch({
+      ...document,
+      items,
+      modules: {
+        ...document.modules,
+        canvas: removeCanvasReferences(document, (node) => node.taskId === action.itemId || Boolean(node.attachmentId && deletedAttachmentIds.has(node.attachmentId))),
+      },
+      resources: { ...document.resources, attachments },
+      preferences: {
+        ...document.preferences,
+        collapsedKanbanSubtaskItemIds: (document.preferences.collapsedKanbanSubtaskItemIds ?? [])
+          .filter((itemId) => itemId !== action.itemId),
+      },
+    });
+  }
+
+  if (action.type === 'reorderKanbanItems') {
+    const orderedIds = Array.from(new Set(action.itemIds))
+      .filter((itemId) => document.items[itemId]?.projectId === action.projectId);
+    const included = new Set(orderedIds);
+    Object.values(document.items)
+      .filter((item) => item.projectId === action.projectId && !included.has(item.id))
+      .sort((left, right) => left.moduleData.kanban.rank - right.moduleData.kanban.rank || left.createdAt.localeCompare(right.createdAt))
+      .forEach((item) => orderedIds.push(item.id));
+    if (orderedIds.length === 0) return document;
+    const items = { ...document.items };
+    orderedIds.forEach((itemId, index) => {
+      const item = items[itemId];
+      items[itemId] = {
+        ...item,
+        moduleData: {
+          ...item.moduleData,
+          kanban: { ...item.moduleData.kanban, rank: (index + 1) * 1000 },
+        },
+      };
+    });
+    return touch({ ...document, items });
   }
 
   if (action.type === 'moveItem') {
@@ -411,6 +742,123 @@ export function workspaceReducer(
     return touch({ ...document, items });
   }
 
+  if (action.type === 'canvasAddNode') {
+    const canvasProject = document.modules.canvas.projects[action.projectId] ?? createCanvasProject();
+    return touch(withCanvasProject(document, action.projectId, {
+      ...canvasProject,
+      nodes: { ...canvasProject.nodes, [action.node.id]: action.node },
+    }));
+  }
+
+  if (action.type === 'canvasUpdateNode') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    const current = canvasProject?.nodes[action.nodeId];
+    if (!canvasProject || !current) return document;
+    return touch(withCanvasProject(document, action.projectId, {
+      ...canvasProject,
+      nodes: {
+        ...canvasProject.nodes,
+        [action.nodeId]: { ...current, ...action.changes, updatedAt: now() },
+      },
+    }));
+  }
+
+  if (action.type === 'canvasUpdateNodes') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    if (!canvasProject || action.updates.length === 0) return document;
+    const nodes = { ...canvasProject.nodes };
+    let changed = false;
+    action.updates.forEach(({ nodeId, changes }) => {
+      if (!nodes[nodeId]) return;
+      nodes[nodeId] = { ...nodes[nodeId], ...changes, updatedAt: now() };
+      changed = true;
+    });
+    return changed ? touch(withCanvasProject(document, action.projectId, { ...canvasProject, nodes })) : document;
+  }
+
+  if (action.type === 'canvasDeleteNodes') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    if (!canvasProject) return document;
+    const deletedIds = new Set(action.nodeIds.filter((nodeId) => Boolean(canvasProject.nodes[nodeId])));
+    if (deletedIds.size === 0) return document;
+    return touch(withCanvasProject(document, action.projectId, {
+      ...canvasProject,
+      nodes: Object.fromEntries(Object.entries(canvasProject.nodes).filter(([nodeId]) => !deletedIds.has(nodeId))),
+      connections: Object.fromEntries(Object.entries(canvasProject.connections).filter(([, connection]) =>
+        !deletedIds.has(connection.fromNodeId) && !deletedIds.has(connection.toNodeId))),
+    }));
+  }
+
+  if (action.type === 'canvasAddConnection') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    if (!canvasProject || !canvasProject.nodes[action.connection.fromNodeId] || !canvasProject.nodes[action.connection.toNodeId]) return document;
+    const duplicate = Object.values(canvasProject.connections).some((connection) =>
+      connection.fromNodeId === action.connection.fromNodeId && connection.toNodeId === action.connection.toNodeId);
+    if (duplicate || action.connection.fromNodeId === action.connection.toNodeId) return document;
+    return touch(withCanvasProject(document, action.projectId, {
+      ...canvasProject,
+      connections: { ...canvasProject.connections, [action.connection.id]: action.connection },
+    }));
+  }
+
+  if (action.type === 'canvasDeleteConnection') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    if (!canvasProject?.connections[action.connectionId]) return document;
+    const connections = { ...canvasProject.connections };
+    delete connections[action.connectionId];
+    return touch(withCanvasProject(document, action.projectId, { ...canvasProject, connections }));
+  }
+
+  if (action.type === 'canvasUpdateConnection') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    const current = canvasProject?.connections[action.connectionId];
+    if (!canvasProject || !current) return document;
+    return touch(withCanvasProject(document, action.projectId, {
+      ...canvasProject,
+      connections: {
+        ...canvasProject.connections,
+        [action.connectionId]: { ...current, ...action.changes },
+      },
+    }));
+  }
+
+  if (action.type === 'canvasAddStroke') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    if (!canvasProject || action.stroke.points.length < 2) return document;
+    return touch(withCanvasProject(document, action.projectId, {
+      ...canvasProject,
+      strokes: { ...canvasProject.strokes, [action.stroke.id]: action.stroke },
+    }));
+  }
+
+  if (action.type === 'canvasDeleteStroke') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    if (!canvasProject?.strokes[action.strokeId]) return document;
+    const strokes = { ...canvasProject.strokes };
+    delete strokes[action.strokeId];
+    return touch(withCanvasProject(document, action.projectId, { ...canvasProject, strokes }));
+  }
+
+  if (action.type === 'canvasSetViewport') {
+    const canvasProject = document.modules.canvas.projects[action.projectId] ?? createCanvasProject();
+    const viewport = normalizedCanvasViewport(action.viewport);
+    if (canvasProject.viewport.x === viewport.x && canvasProject.viewport.y === viewport.y && canvasProject.viewport.zoom === viewport.zoom) return document;
+    return touch(withCanvasProject(document, action.projectId, { ...canvasProject, viewport }));
+  }
+
+  if (action.type === 'canvasAddAttachments') {
+    if (action.attachments.length === 0) return document;
+    const canvasProject = document.modules.canvas.projects[action.projectId] ?? createCanvasProject();
+    const attachments = { ...document.resources.attachments };
+    action.attachments.forEach((attachment) => { attachments[attachment.id] = attachment; });
+    const nodes = { ...canvasProject.nodes };
+    action.nodes.forEach((node) => { nodes[node.id] = node; });
+    return touch({
+      ...withCanvasProject(document, action.projectId, { ...canvasProject, nodes }),
+      resources: { ...document.resources, attachments },
+    });
+  }
+
   const kanban = document.modules.kanban;
   const settings = kanban.projects[action.projectId];
   if (!settings) return document;
@@ -425,6 +873,28 @@ export function workspaceReducer(
           projects: {
             ...kanban.projects,
             [action.projectId]: { ...settings, columns: [...settings.columns, action.column] },
+          },
+        },
+      },
+    });
+  }
+
+  if (action.type === 'reorderColumns') {
+    const columnById = new Map(settings.columns.map((column) => [column.id, column]));
+    const orderedIds = Array.from(new Set(action.columnIds));
+    const columns = [
+      ...orderedIds.map((columnId) => columnById.get(columnId)).filter((column): column is KanbanColumn => Boolean(column)),
+      ...settings.columns.filter((column) => !orderedIds.includes(column.id)),
+    ];
+    return touch({
+      ...document,
+      modules: {
+        ...document.modules,
+        kanban: {
+          ...kanban,
+          projects: {
+            ...kanban.projects,
+            [action.projectId]: { ...settings, columns },
           },
         },
       },

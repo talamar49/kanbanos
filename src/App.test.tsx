@@ -1,0 +1,159 @@
+import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import App from './App';
+import { createEmptyWorkspace, createWorkItem } from './domain/workspace';
+import { PreferencesProvider } from './i18n';
+
+function desktopApi(options: {
+  stored?: unknown;
+  recent?: RepositoryConnection[];
+  saveResult?: SaveResult;
+  attachments?: ImportedAttachment[];
+} = {}) {
+  const connection: RepositoryConnection = { repositoryPath: '/work/demo', displayName: 'Demo workspace' };
+  const api = {
+    appearance: { setTheme: vi.fn() },
+    repository: {
+      status: vi.fn().mockResolvedValue(connection),
+      listRecent: vi.fn().mockResolvedValue(options.recent ?? []),
+      openRecent: vi.fn().mockResolvedValue(connection),
+      removeRecent: vi.fn().mockResolvedValue(undefined),
+      createLocal: vi.fn().mockResolvedValue(connection),
+      connectRemote: vi.fn().mockResolvedValue(connection),
+      chooseLocal: vi.fn().mockResolvedValue(connection),
+      addRemote: vi.fn().mockResolvedValue(connection),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      reveal: vi.fn().mockResolvedValue(undefined),
+    },
+    attachments: {
+      pickFiles: vi.fn().mockResolvedValue(options.attachments ?? []),
+      pickFolders: vi.fn().mockResolvedValue([]),
+      open: vi.fn().mockResolvedValue(undefined),
+      reveal: vi.fn().mockResolvedValue(undefined),
+      preview: vi.fn().mockResolvedValue({ type: 'unsupported', name: 'file.bin', extension: '.bin' }),
+      remove: vi.fn().mockResolvedValue(undefined),
+    },
+    workspace: {
+      load: vi.fn().mockResolvedValue(options.stored ?? null),
+      save: vi.fn().mockImplementation(async (document: unknown) => options.saveResult ?? ({
+        status: 'local-only',
+        message: 'Saved to the local Git repository.',
+        document,
+      })),
+      resolveConflicts: vi.fn().mockImplementation(async () => ({
+        status: 'synced',
+        message: 'Conflict resolved. Your workspace is in sync.',
+        document: options.stored,
+      })),
+    },
+  };
+  window.kanbanos = api as unknown as Window['kanbanos'];
+  return { api, connection };
+}
+
+function renderApp() {
+  return <PreferencesProvider><App /></PreferencesProvider>;
+}
+
+describe('Kanbanos app integration', () => {
+  it('creates a workspace, captures a task, and persists it through the desktop bridge', async () => {
+    const user = userEvent.setup();
+    const { api } = desktopApi();
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    expect(await screen.findByRole('heading', { name: 'Start your first workspace' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create a new workspace' }));
+    await user.type(screen.getByLabelText('Workspace name'), 'Product team');
+    await user.click(screen.getByRole('button', { name: 'Choose location' }));
+
+    await waitFor(() => expect(api.repository.createLocal).toHaveBeenCalledWith('Product team', 'en'));
+    expect(await screen.findByText('Demo workspace')).toBeInTheDocument();
+
+    await user.keyboard('c');
+    expect(await screen.findByRole('dialog', { name: 'Create task' })).toBeInTheDocument();
+    await user.type(screen.getByLabelText('What needs to happen?'), 'Regression task');
+    await user.selectOptions(screen.getByLabelText('Priority'), 'high');
+    await user.click(screen.getByRole('button', { name: 'Create task' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Task details' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Regression task')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close task' }));
+    expect(screen.getByText('Regression task')).toBeInTheDocument();
+
+    const saveButton = screen.getByRole('button', { name: /Save changes|Save now/ });
+    await user.click(saveButton);
+    await waitFor(() => expect(api.workspace.save).toHaveBeenCalled());
+    const savedDocument = api.workspace.save.mock.calls.at(-1)?.[0] as ReturnType<typeof createEmptyWorkspace>;
+    expect(Object.values(savedDocument.items).some((item) => item.title === 'Regression task' && item.priority === 'high')).toBe(true);
+  });
+
+  it('loads a recent workspace and routes attachment actions through Electron', async () => {
+    const user = userEvent.setup();
+    const stored = createEmptyWorkspace('Loaded workspace');
+    const projectId = stored.projects[0].id;
+    const task = createWorkItem(projectId, 'planned', 'Review brief', 1000);
+    stored.items[task.id] = task;
+    const imported: ImportedAttachment = {
+      id: '10000000-0000-4000-8000-000000000001',
+      name: 'brief.pdf',
+      kind: 'file',
+      relativePath: '.kanbanos/content/attachments/10000000-0000-4000-8000-000000000001/brief.pdf',
+      sizeBytes: 1024,
+      fileCount: 1,
+      createdAt: '2027-01-01T00:00:00.000Z',
+    };
+    const recent = [{ repositoryPath: '/work/demo', displayName: 'Recent workspace' }];
+    const { api } = desktopApi({ stored, recent, attachments: [imported] });
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click((await screen.findByText('Recent workspace')).closest('.recent-workspace-main')!);
+    expect(await screen.findByText('Review brief')).toBeInTheDocument();
+    await user.click(screen.getByText('Review brief'));
+    expect(await screen.findByRole('dialog', { name: 'Task details' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Attach files' }));
+    await waitFor(() => expect(api.attachments.pickFiles).toHaveBeenCalledWith('en'));
+    expect(await screen.findByText('brief.pdf')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: 'Open brief.pdf' }));
+    expect(api.attachments.open).toHaveBeenCalledWith(imported.relativePath);
+    await user.click(screen.getByRole('button', { name: 'Show brief.pdf in workspace folder' }));
+    expect(api.attachments.reveal).toHaveBeenCalledWith(imported.relativePath);
+  });
+
+  it('shows save conflicts and resolves the chosen workspace version', async () => {
+    const user = userEvent.setup();
+    const stored = createEmptyWorkspace('Conflict workspace');
+    const conflict: GitConflict = {
+      path: '.kanbanos/workspace.json',
+      localContent: JSON.stringify(stored),
+      remoteContent: JSON.stringify(stored),
+    };
+    const { api } = desktopApi({
+      stored,
+      recent: [{ repositoryPath: '/work/demo', displayName: 'Conflict workspace' }],
+      saveResult: {
+        status: 'conflict',
+        message: 'This workspace was changed somewhere else. Pick the version to keep.',
+        conflicts: [conflict],
+      },
+    });
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click((await screen.findByText('Conflict workspace')).closest('.recent-workspace-main')!);
+    await user.keyboard('c');
+    await user.type(await screen.findByLabelText('What needs to happen?'), 'Conflicting change');
+    await user.click(screen.getByRole('button', { name: 'Create task' }));
+    await user.click(await screen.findByRole('button', { name: 'Close task' }));
+    await user.click(screen.getByRole('button', { name: /Save changes|Save now/ }));
+
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Keep my version/ }));
+    await waitFor(() => expect(api.workspace.resolveConflicts).toHaveBeenCalledWith('local'));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+  });
+});

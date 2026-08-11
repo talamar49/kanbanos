@@ -14,7 +14,7 @@ if (process.platform === 'linux') {
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'kanbanos-attachment',
-  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
 }]);
 
 const gitWorkspace = new GitWorkspaceService();
@@ -113,7 +113,7 @@ function registerIpc(): void {
     if (result.canceled || !result.filePaths[0]) return null;
     return gitWorkspace.createLocal(displayName, result.filePaths[0]);
   });
-  ipcMain.handle('repository:connect-remote', (_event, remoteUrl: string, credentials?: GitCredentials) =>
+  ipcMain.handle('repository:connect-remote', (_event, remoteUrl: string, credentials?: GitCredentials | null) =>
     gitWorkspace.connectRemote(remoteUrl, credentials),
   );
   ipcMain.handle('repository:choose-local', async (_event, language: 'en' | 'he' = 'en') => {
@@ -124,7 +124,7 @@ function registerIpc(): void {
     if (result.canceled || !result.filePaths[0]) return null;
     return gitWorkspace.connectLocal(result.filePaths[0]);
   });
-  ipcMain.handle('repository:add-remote', (_event, remoteUrl: string, credentials?: GitCredentials) =>
+  ipcMain.handle('repository:add-remote', (_event, remoteUrl: string, credentials?: GitCredentials | null) =>
     gitWorkspace.addRemote(remoteUrl, credentials),
   );
   ipcMain.handle('repository:disconnect', () => gitWorkspace.disconnect());

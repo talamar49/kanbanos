@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, X } from 'lucide-react';
 import kanbanosLogo from './assets/kanbanos-mascot.png';
+import { CanvasView } from './components/CanvasView';
 import { ConflictDialog } from './components/ConflictDialog';
 import { FilesView } from './components/FilesView';
 import { KanbanBoard } from './components/KanbanBoard';
@@ -13,8 +14,8 @@ import { Sidebar } from './components/Sidebar';
 import { TaskComposerModal } from './components/TaskComposerModal';
 import { TaskModal } from './components/TaskModal';
 import { TimelineView } from './components/TimelineView';
-import type { TaskDraft, WorkspaceAction, WorkspaceAttachment, WorkspaceDocument, WorkspaceView } from './domain/types';
-import { createEmptyWorkspace, createWorkItem, isWorkspaceDocument, normalizeWorkspaceDocument, workspaceReducer } from './domain/workspace';
+import type { CanvasPoint, TaskDraft, WorkspaceAction, WorkspaceAttachment, WorkspaceDocument, WorkspaceView } from './domain/types';
+import { createCanvasNode, createEmptyWorkspace, createWorkItem, isWorkspaceDocument, normalizeWorkspaceDocument, workspaceReducer } from './domain/workspace';
 import { useI18n } from './i18n';
 
 type BootState = 'loading' | 'onboarding' | 'ready';
@@ -46,6 +47,7 @@ export default function App() {
   const [previewAttachment, setPreviewAttachment] = useState<WorkspaceAttachment | null>(null);
   const [projectModal, setProjectModal] = useState<{ mode: 'create' | 'edit'; projectId?: string; targetDate?: string } | null>(null);
   const [taskComposer, setTaskComposer] = useState<{ projectId: string; preset?: Partial<TaskDraft> } | null>(null);
+  const [pendingCanvasTask, setPendingCanvasTask] = useState<{ projectId: string; point: CanvasPoint } | null>(null);
   const [remoteModalOpen, setRemoteModalOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState<RepositoryConnection[]>([]);
   const [conflicts, setConflicts] = useState<GitConflict[] | null>(null);
@@ -175,10 +177,10 @@ export default function App() {
     if (nextConnection) await loadWorkspace(nextConnection);
   };
 
-  const connectRemote = async (url: string, credentials?: GitCredentials) => {
+  const connectRemote = async (url: string, credentials?: GitCredentials | null) => {
     const nextConnection = window.kanbanos
       ? await window.kanbanos.repository.connectRemote(url, credentials)
-      : { repositoryPath: 'browser-demo', remoteUrl: url, displayName: t('Demo workspace') };
+      : { repositoryPath: 'browser-demo', remoteUrl: url, displayName: t('Demo workspace'), privateRemote: Boolean(credentials), hasStoredCredentials: Boolean(credentials) };
     await loadWorkspace(nextConnection);
   };
 
@@ -201,10 +203,15 @@ export default function App() {
     setRecentWorkspaces((current) => current.filter((workspace) => workspace.repositoryPath !== repositoryPath));
   };
 
-  const addRemote = async (url: string, credentials?: GitCredentials) => {
+  const addRemote = async (url: string, credentials?: GitCredentials | null) => {
     const nextConnection = window.kanbanos
       ? await window.kanbanos.repository.addRemote(url, credentials)
-      : { ...connection!, remoteUrl: url };
+      : {
+          ...connection!,
+          remoteUrl: url,
+          privateRemote: credentials === undefined ? connection?.privateRemote : Boolean(credentials),
+          hasStoredCredentials: credentials === undefined ? connection?.hasStoredCredentials : Boolean(credentials),
+        };
     setConnection(nextConnection);
     setDirty(true);
     setSaveState('idle');
@@ -243,7 +250,25 @@ export default function App() {
     }
   };
 
-  const addTaskAttachments = async (itemId: string, kind: 'files' | 'folders') => {
+  const addTaskAttachments = async (itemId: string, kind: 'files' | 'folders'): Promise<WorkspaceAttachment[]> => {
+    const api = window.kanbanos?.attachments;
+    if (!api) {
+      notify(t('Attachments are available in the desktop app.'), 'error');
+      return [];
+    }
+    try {
+      const attachments = await (kind === 'files' ? api.pickFiles(language) : api.pickFolders(language));
+      if (attachments.length === 0) return [];
+      applyAction({ type: 'addAttachments', itemId, attachments });
+      notify(t(attachments.length === 1 ? 'Attachment added to the task.' : '{{count}} attachments added to the task.', { count: attachments.length }));
+      return attachments;
+    } catch (error) {
+      notify(error instanceof Error ? t(error.message) : t('Could not attach that item.'), 'error');
+      return [];
+    }
+  };
+
+  const addCanvasAttachments = async (projectId: string, point: CanvasPoint, kind: 'files' | 'folders') => {
     const api = window.kanbanos?.attachments;
     if (!api) {
       notify(t('Attachments are available in the desktop app.'), 'error');
@@ -252,10 +277,19 @@ export default function App() {
     try {
       const attachments = await (kind === 'files' ? api.pickFiles(language) : api.pickFolders(language));
       if (attachments.length === 0) return;
-      applyAction({ type: 'addAttachments', itemId, attachments });
-      notify(t(attachments.length === 1 ? 'Attachment added to the task.' : '{{count}} attachments added to the task.', { count: attachments.length }));
+      const canvasNodes = Object.values(document.modules.canvas.projects[projectId]?.nodes ?? {});
+      const topZIndex = Math.max(0, ...canvasNodes.map((node) => node.zIndex));
+      const nodes = attachments.map((attachment, index) => createCanvasNode('file', {
+        x: point.x + index * 28,
+        y: point.y + index * 28,
+      }, {
+        attachmentId: attachment.id,
+        zIndex: topZIndex + index + 1,
+      }));
+      applyAction({ type: 'canvasAddAttachments', projectId, attachments, nodes });
+      notify(t(attachments.length === 1 ? 'File added to the canvas.' : '{{count}} files added to the canvas.', { count: attachments.length }));
     } catch (error) {
-      notify(error instanceof Error ? t(error.message) : t('Could not attach that item.'), 'error');
+      notify(error instanceof Error ? t(error.message) : t('Could not add files to the canvas.'), 'error');
     }
   };
 
@@ -309,7 +343,17 @@ export default function App() {
   };
 
   const openTaskComposer = (projectId: string, preset?: Partial<TaskDraft>) => {
+    setPendingCanvasTask(null);
     setTaskComposer({ projectId, preset });
+  };
+
+  const openCanvasTaskComposer = (projectId: string, point: CanvasPoint) => {
+    const columns = document.modules.kanban.projects[projectId]?.columns ?? [];
+    setPendingCanvasTask({ projectId, point });
+    setTaskComposer({
+      projectId,
+      preset: { columnId: columns.find((column) => column.id === 'planned')?.id ?? columns[0]?.id },
+    });
   };
 
   const createTaskFromDraft = (draft: TaskDraft) => {
@@ -321,6 +365,19 @@ export default function App() {
       applyAction({ type: 'selectProject', projectId: taskComposer.projectId });
     }
     applyAction({ type: 'addItem', item: task });
+    if (pendingCanvasTask?.projectId === task.projectId) {
+      const canvasNodes = Object.values(document.modules.canvas.projects[task.projectId]?.nodes ?? {});
+      applyAction({
+        type: 'canvasAddNode',
+        projectId: task.projectId,
+        node: createCanvasNode('task', pendingCanvasTask.point, {
+          taskId: task.id,
+          color: document.projects.find((project) => project.id === task.projectId)?.color,
+          zIndex: Math.max(0, ...canvasNodes.map((node) => node.zIndex)) + 1,
+        }),
+      });
+    }
+    setPendingCanvasTask(null);
     setTaskComposer(null);
     setOpenTaskId(task.id);
   };
@@ -334,14 +391,14 @@ export default function App() {
   useEffect(() => {
     const handleQuickCapture = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (!activeProject || event.key.toLowerCase() !== 'c' || event.ctrlKey || event.metaKey || event.altKey || target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (!activeProject || activeView === 'canvas' || event.key.toLowerCase() !== 'c' || event.ctrlKey || event.metaKey || event.altKey || target?.closest('input, textarea, select, [contenteditable="true"]')) return;
       event.preventDefault();
       const columns = document.modules.kanban.projects[activeProject.id]?.columns ?? [];
       openTaskComposer(activeProject.id, { columnId: columns.find((column) => column.id === 'planned')?.id ?? columns[0]?.id });
     };
     window.addEventListener('keydown', handleQuickCapture);
     return () => window.removeEventListener('keydown', handleQuickCapture);
-  }, [activeProject, document.modules.kanban.projects]);
+  }, [activeProject, activeView, document.modules.kanban.projects]);
 
   if (bootState === 'loading') return <LoadingScreen />;
   if (bootState === 'onboarding' || !connection) {
@@ -422,6 +479,21 @@ export default function App() {
           onEditProject={() => setProjectModal({ mode: 'edit', projectId: activeProject.id })}
         />
       )}
+      {activeView === 'canvas' && (
+        <CanvasView
+          document={document}
+          project={activeProject}
+          saveState={saveState}
+          dirty={dirty}
+          onAction={applyAction}
+          onSave={() => void save()}
+          onOpenTask={(item) => setOpenTaskId(item.id)}
+          onCreateTask={(point) => openCanvasTaskComposer(activeProject.id, point)}
+          onAddFiles={(point, kind) => void addCanvasAttachments(activeProject.id, point, kind)}
+          onPreviewAttachment={setPreviewAttachment}
+          onOpenAttachment={(attachment) => void openAttachment(attachment)}
+        />
+      )}
       {activeView === 'roadmap' && (
         <RoadmapView
           document={document}
@@ -432,6 +504,7 @@ export default function App() {
           onAddTask={(projectId, preset) => openTaskComposer(projectId, preset)}
           onEditProject={(projectId) => setProjectModal({ mode: 'edit', projectId })}
           onMoveProject={(projectId, targetDate) => applyAction({ type: 'updateProject', projectId, changes: { targetDate } })}
+          onReorderHorizons={(horizons) => applyAction({ type: 'reorderRoadmapColumns', horizons })}
           onOpenTask={(item) => setOpenTaskId(item.id)}
           onOpenProject={(projectId) => {
             applyAction({ type: 'selectProject', projectId });
@@ -461,7 +534,7 @@ export default function App() {
             columns={taskColumns}
             preset={taskComposer.preset}
             onCreate={createTaskFromDraft}
-            onClose={() => setTaskComposer(null)}
+            onClose={() => { setTaskComposer(null); setPendingCanvasTask(null); }}
           />
         ) : null;
       })()}
@@ -494,6 +567,8 @@ export default function App() {
       {remoteModalOpen && (
         <RemoteModal
           currentUrl={connection.remoteUrl}
+          privateRepository={Boolean(connection.privateRemote)}
+          hasStoredCredentials={Boolean(connection.hasStoredCredentials)}
           onConnect={addRemote}
           onClose={() => setRemoteModalOpen(false)}
         />

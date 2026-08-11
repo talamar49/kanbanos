@@ -1,16 +1,25 @@
 import { CSSProperties, ReactNode, useState } from 'react';
 import {
+  closestCenter,
   DndContext,
   DragEndEvent,
   DragOverlay,
   DragStartEvent,
+  KeyboardSensor,
   PointerSensor,
   pointerWithin,
   useDraggable,
-  useDroppable,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
+import type { CollisionDetection } from '@dnd-kit/core';
+import {
+  arrayMove,
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
   ArrowRight,
@@ -26,13 +35,17 @@ import {
   Plus,
   Route,
 } from 'lucide-react';
-import type { Project, TaskDraft, WorkItem, WorkspaceDocument } from '../domain/types';
+import type { Project, RoadmapHorizon, TaskDraft, WorkItem, WorkspaceDocument } from '../domain/types';
+import { ROADMAP_HORIZONS } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import { PreferencesControls } from './PreferencesControls';
 
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
-type Horizon = 'Now' | 'Next' | 'Later';
 type ProjectProgress = { tasks: number; completed: number; percent: number; upcoming: WorkItem[] };
+
+const roadmapCollisionDetection: CollisionDetection = (args) => args.pointerCoordinates
+  ? pointerWithin(args)
+  : closestCenter(args);
 
 type Props = {
   document: WorkspaceDocument;
@@ -45,16 +58,17 @@ type Props = {
   onOpenProject: (projectId: string) => void;
   onOpenTask: (item: WorkItem) => void;
   onMoveProject: (projectId: string, targetDate: string) => void;
+  onReorderHorizons: (horizons: RoadmapHorizon[]) => void;
 };
 
-function targetDateFor(horizon: Horizon): string {
+function targetDateFor(horizon: RoadmapHorizon): string {
   const date = new Date();
   date.setHours(12, 0, 0, 0);
   date.setDate(date.getDate() + (horizon === 'Now' ? 30 : horizon === 'Next' ? 90 : 180));
   return date.toISOString().slice(0, 10);
 }
 
-function horizonFor(project: Project): Horizon {
+function horizonFor(project: Project): RoadmapHorizon {
   if (!project.targetDate) return 'Later';
   const days = (new Date(`${project.targetDate}T12:00:00`).getTime() - Date.now()) / 86_400_000;
   if (days <= 45) return 'Now';
@@ -62,13 +76,39 @@ function horizonFor(project: Project): Horizon {
   return 'Later';
 }
 
-function RoadmapColumn({ horizon, count, active, children }: { horizon: Horizon; count: number; active: boolean; children: ReactNode }) {
+function RoadmapColumn({ horizon, count, dropActive, children }: { horizon: RoadmapHorizon; count: number; dropActive: boolean; children: ReactNode }) {
   const { t } = useI18n();
-  const { setNodeRef, isOver } = useDroppable({ id: `roadmap-horizon:${horizon}` });
+  const {
+    attributes,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: `roadmap-horizon:${horizon}`,
+    data: { type: 'roadmap-column', horizon },
+  });
   return (
-    <section ref={setNodeRef} className={`roadmap-column roadmap-${horizon.toLowerCase()} ${active || isOver ? 'drop-target' : ''}`}>
+    <section
+      ref={setNodeRef}
+      className={`roadmap-column roadmap-${horizon.toLowerCase()} ${dropActive ? 'drop-target' : ''} ${isDragging ? 'column-dragging' : ''}`}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+    >
       <header>
-        <div><i /><h2>{t(horizon)}</h2><span>{count}</span>{(active || isOver) && <em>{t('Drop to move')}</em>}</div>
+        <div>
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            className="roadmap-column-drag-handle"
+            {...attributes}
+            {...listeners}
+            aria-label={t('Reorder {{name}} column', { name: t(horizon) })}
+            title={t('Drag column to reorder')}
+          ><GripVertical size={18} /></button>
+          <i /><h2>{t(horizon)}</h2><span>{count}</span>{dropActive && <em>{t('Drop to move')}</em>}
+        </div>
         <p>{t(horizon === 'Now' ? 'Committed outcomes · next 45 days' : horizon === 'Next' ? 'Planned outcomes · this quarter' : 'Ideas and longer-term opportunities')}</p>
       </header>
       <div className="roadmap-projects">{children}</div>
@@ -96,16 +136,18 @@ function RoadmapCard({
   const { locale, t } = useI18n();
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `roadmap-project:${project.id}`,
-    data: { projectId: project.id },
+    data: { type: 'roadmap-project', projectId: project.id },
   });
   return (
     <article
       ref={setNodeRef}
       className={`roadmap-card ${isDragging ? 'dragging' : ''} ${recentlyMoved ? 'just-moved' : ''}`}
       style={{ '--project-color': project.color, transform: CSS.Translate.toString(transform) } as CSSProperties}
+      aria-label={t('Move {{name}}', { name: project.name })}
+      {...attributes}
+      {...listeners}
     >
       <div className="roadmap-card-top">
-        <button className="roadmap-drag-handle" {...listeners} {...attributes} aria-label={t('Move {{name}}', { name: project.name })} title={t('Drag to another horizon')}><GripVertical size={18} /></button>
         <span className="roadmap-project-mark" style={{ background: `${project.color}18`, color: project.color }}><Flag size={19} /></span>
         <div><h3>{project.name}</h3><p>{project.description || t('A focused project with room to grow.')}</p></div>
         <button className="icon-button" onClick={onEdit} aria-label={t('Edit {{name}}', { name: project.name })}><Ellipsis size={18} /></button>
@@ -135,14 +177,18 @@ function RoadmapCard({
   );
 }
 
-export function RoadmapView({ document, saveState, dirty, onSave, onAddProject, onAddTask, onEditProject, onOpenProject, onOpenTask, onMoveProject }: Props) {
+export function RoadmapView({ document, saveState, dirty, onSave, onAddProject, onAddTask, onEditProject, onOpenProject, onOpenTask, onMoveProject, onReorderHorizons }: Props) {
   const { t } = useI18n();
   const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
-  const [dragOverHorizon, setDragOverHorizon] = useState<Horizon | null>(null);
+  const [draggedHorizon, setDraggedHorizon] = useState<RoadmapHorizon | null>(null);
+  const [dragOverHorizon, setDragOverHorizon] = useState<RoadmapHorizon | null>(null);
   const [recentlyMovedId, setRecentlyMovedId] = useState<string | null>(null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const projects = document.projects.filter((project) => !project.archived);
-  const horizons: Horizon[] = ['Now', 'Next', 'Later'];
+  const horizons = document.preferences.roadmapHorizonOrder ?? ROADMAP_HORIZONS;
   const draggedProject = projects.find((project) => project.id === draggedProjectId);
 
   const progressFor = (project: Project): ProjectProgress => {
@@ -157,12 +203,42 @@ export function RoadmapView({ document, saveState, dirty, onSave, onAddProject, 
     return { tasks: tasks.length, completed: completed.length, percent: tasks.length ? Math.round((completed.length / tasks.length) * 100) : 0, upcoming };
   };
 
-  const handleDragStart = (event: DragStartEvent) => setDraggedProjectId(event.active.data.current?.projectId as string | undefined ?? null);
+  const clearDragState = () => {
+    setDraggedProjectId(null);
+    setDraggedHorizon(null);
+    setDragOverHorizon(null);
+  };
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const data = event.active.data.current as { type?: string; projectId?: string; horizon?: RoadmapHorizon } | undefined;
+    if (data?.type === 'roadmap-column') {
+      setDraggedHorizon(data.horizon ?? null);
+      setDraggedProjectId(null);
+      return;
+    }
+    setDraggedProjectId(data?.projectId ?? null);
+    setDraggedHorizon(null);
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
-    const projectId = event.active.data.current?.projectId as string | undefined;
+    const data = event.active.data.current as { type?: string; projectId?: string; horizon?: RoadmapHorizon } | undefined;
     const dropId = event.over?.id.toString();
+
+    if (data?.type === 'roadmap-column') {
+      const overHorizon = event.over?.data.current?.horizon as RoadmapHorizon | undefined
+        ?? (dropId?.startsWith('roadmap-horizon:') ? dropId.slice('roadmap-horizon:'.length) as RoadmapHorizon : undefined);
+      const oldIndex = horizons.indexOf(data.horizon as RoadmapHorizon);
+      const newIndex = overHorizon ? horizons.indexOf(overHorizon) : -1;
+      if (oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) {
+        onReorderHorizons(arrayMove(horizons, oldIndex, newIndex));
+      }
+      clearDragState();
+      return;
+    }
+
+    const projectId = data?.projectId;
     if (projectId && dropId?.startsWith('roadmap-horizon:')) {
-      const horizon = dropId.slice('roadmap-horizon:'.length) as Horizon;
+      const horizon = dropId.slice('roadmap-horizon:'.length) as RoadmapHorizon;
       const project = projects.find((candidate) => candidate.id === projectId);
       if (project && horizonFor(project) !== horizon) {
         onMoveProject(projectId, targetDateFor(horizon));
@@ -170,8 +246,7 @@ export function RoadmapView({ document, saveState, dirty, onSave, onAddProject, 
         window.setTimeout(() => setRecentlyMovedId((current) => current === projectId ? null : current), 520);
       }
     }
-    setDraggedProjectId(null);
-    setDragOverHorizon(null);
+    clearDragState();
   };
   const openTasks = Object.values(document.items).filter((item) => {
     const columns = document.modules.kanban.projects[item.projectId]?.columns ?? [];
@@ -205,43 +280,49 @@ export function RoadmapView({ document, saveState, dirty, onSave, onAddProject, 
 
       <DndContext
         sensors={sensors}
-        collisionDetection={pointerWithin}
+        collisionDetection={roadmapCollisionDetection}
         onDragStart={handleDragStart}
         onDragOver={(event) => {
+          if (event.active.data.current?.type !== 'roadmap-project') {
+            setDragOverHorizon(null);
+            return;
+          }
           const id = event.over?.id.toString();
-          setDragOverHorizon(id?.startsWith('roadmap-horizon:') ? id.slice('roadmap-horizon:'.length) as Horizon : null);
+          setDragOverHorizon(id?.startsWith('roadmap-horizon:') ? id.slice('roadmap-horizon:'.length) as RoadmapHorizon : null);
         }}
-        onDragCancel={() => { setDraggedProjectId(null); setDragOverHorizon(null); }}
+        onDragCancel={clearDragState}
         onDragEnd={handleDragEnd}
       >
         <div className="roadmap-content">
           <div className="roadmap-horizons">
-            {horizons.map((horizon) => {
-              const horizonProjects = projects.filter((project) => horizonFor(project) === horizon);
-              return (
-                <RoadmapColumn key={horizon} horizon={horizon} count={horizonProjects.length} active={dragOverHorizon === horizon}>
-                  {horizonProjects.map((project) => (
-                    <RoadmapCard
-                      key={project.id}
-                      project={project}
-                      progress={progressFor(project)}
-                      recentlyMoved={recentlyMovedId === project.id}
-                      onAddTask={() => onAddTask(project.id, project.targetDate ? { dueDate: project.targetDate } : undefined)}
-                      onEdit={() => onEditProject(project.id)}
-                      onOpen={() => onOpenProject(project.id)}
-                      onOpenTask={onOpenTask}
-                    />
-                  ))}
-                  {horizonProjects.length === 0 && <div className="roadmap-empty"><CircleDashed size={29} /><strong>{t('Nothing planned here yet')}</strong><span>{t('Drag an initiative here, or create one with a useful target date.')}</span></div>}
-                  <button className="roadmap-add-mission" onClick={() => onAddProject(targetDateFor(horizon))}><Plus size={17} /> {t('Add initiative to {{horizon}}', { horizon: t(horizon) })}</button>
-                </RoadmapColumn>
-              );
-            })}
+            <SortableContext items={horizons.map((horizon) => `roadmap-horizon:${horizon}`)} strategy={horizontalListSortingStrategy}>
+              {horizons.map((horizon) => {
+                const horizonProjects = projects.filter((project) => horizonFor(project) === horizon);
+                return (
+                  <RoadmapColumn key={horizon} horizon={horizon} count={horizonProjects.length} dropActive={dragOverHorizon === horizon}>
+                    {horizonProjects.map((project) => (
+                      <RoadmapCard
+                        key={project.id}
+                        project={project}
+                        progress={progressFor(project)}
+                        recentlyMoved={recentlyMovedId === project.id}
+                        onAddTask={() => onAddTask(project.id, project.targetDate ? { dueDate: project.targetDate } : undefined)}
+                        onEdit={() => onEditProject(project.id)}
+                        onOpen={() => onOpenProject(project.id)}
+                        onOpenTask={onOpenTask}
+                      />
+                    ))}
+                    {horizonProjects.length === 0 && <div className="roadmap-empty"><CircleDashed size={29} /><strong>{t('Nothing planned here yet')}</strong><span>{t('Drag an initiative here, or create one with a useful target date.')}</span></div>}
+                    <button className="roadmap-add-mission" onClick={() => onAddProject(targetDateFor(horizon))}><Plus size={17} /> {t('Add initiative to {{horizon}}', { horizon: t(horizon) })}</button>
+                  </RoadmapColumn>
+                );
+              })}
+            </SortableContext>
           </div>
           <div className="roadmap-footnote"><CheckCircle2 size={18} /> {t('Progress is calculated from completed tasks. Drag initiatives between horizons to update target dates automatically.')}</div>
         </div>
         <DragOverlay dropAnimation={{ duration: 260, easing: 'cubic-bezier(.2,.8,.2,1)' }}>
-          {draggedProject && <div className="roadmap-drag-overlay"><span style={{ color: draggedProject.color, background: `${draggedProject.color}18` }}><Flag size={20} /></span><div><strong>{draggedProject.name}</strong><small>{dragOverHorizon ? t('Move to {{horizon}}', { horizon: t(dragOverHorizon) }) : t('Choose a planning horizon')}</small></div></div>}
+          {draggedProject ? <div className="roadmap-drag-overlay"><span style={{ color: draggedProject.color, background: `${draggedProject.color}18` }}><Flag size={20} /></span><div><strong>{draggedProject.name}</strong><small>{dragOverHorizon ? t('Move to {{horizon}}', { horizon: t(dragOverHorizon) }) : t('Choose a planning horizon')}</small></div></div> : draggedHorizon ? <div className="roadmap-column-drag-overlay"><GripVertical size={20} /><div><strong>{t(draggedHorizon)}</strong><small>{t('Drop to reorder columns')}</small></div></div> : null}
         </DragOverlay>
       </DndContext>
     </main>

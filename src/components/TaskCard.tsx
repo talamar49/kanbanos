@@ -1,8 +1,24 @@
-import { CSSProperties } from 'react';
-import { useSortable } from '@dnd-kit/sortable';
+import { CSSProperties, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
+import {
+  closestCenter,
+  DndContext,
+  DragEndEvent,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Calendar, Check, CheckSquare2, Clock3, GripVertical, Paperclip } from 'lucide-react';
-import type { Project, WorkItem } from '../domain/types';
+import { Calendar, Check, CheckSquare2, ChevronDown, Clock3, GripVertical, Paperclip, Plus } from 'lucide-react';
+import type { Project, Subtask, WorkItem } from '../domain/types';
 import { PRIORITY_META } from '../domain/workspace';
 import { useI18n } from '../i18n';
 
@@ -44,24 +60,74 @@ function avatarColor(initials: string): string {
   return palette[initials.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) % palette.length];
 }
 
+function SortableCardSubtask({ subtask, onToggle }: { subtask: Subtask; onToggle: () => void }) {
+  const { t } = useI18n();
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: subtask.id });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`card-subtask-item ${isDragging ? 'dragging' : ''}`}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+    >
+      <span
+        className="card-subtask-drag-guard"
+        onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="card-subtask-drag-handle"
+          {...attributes}
+          {...listeners}
+          aria-label={t('Reorder {{name}}', { name: subtask.title })}
+          title={t('Drag to reorder')}
+        ><GripVertical size={14} /></button>
+      </span>
+      <button
+        type="button"
+        className={`card-subtask-toggle ${subtask.completed ? 'completed' : ''}`}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => { event.stopPropagation(); onToggle(); }}
+        title={t(subtask.completed ? 'Mark as not complete' : 'Mark as complete')}
+      >
+        <span>{subtask.completed ? <Check size={12} /> : null}</span>
+        <em>{subtask.title}</em>
+      </button>
+    </div>
+  );
+}
+
 type Props = {
   item: WorkItem;
   project?: Project;
   dragDisabled?: boolean;
+  subtasksCollapsed: boolean;
   onOpen: (item: WorkItem) => void;
-  onToggleSubtask: (itemId: string, subtaskId: string) => void;
+  onUpdateSubtasks: (itemId: string, subtasks: Subtask[]) => void;
+  onSetSubtasksCollapsed: (itemId: string, collapsed: boolean) => void;
 };
 
-export function TaskCard({ item, project, dragDisabled = false, onOpen, onToggleSubtask }: Props) {
+export function TaskCard({ item, project, dragDisabled = false, subtasksCollapsed, onOpen, onUpdateSubtasks, onSetSubtasksCollapsed }: Props) {
   const { locale, t } = useI18n();
+  const [addingSubtask, setAddingSubtask] = useState(false);
+  const [subtasksExpanded, setSubtasksExpanded] = useState(false);
+  const [subtaskDraft, setSubtaskDraft] = useState('');
+  const subtaskInputRef = useRef<HTMLInputElement>(null);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
     data: { type: 'item', columnId: item.moduleData.kanban.columnId },
     disabled: dragDisabled,
   });
+  const subtaskSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const visibleSubtasks = subtasksExpanded ? item.subtasks : item.subtasks.slice(0, 3);
   const completed = item.subtasks.filter((subtask) => subtask.completed).length;
   const progress = item.subtasks.length ? Math.round((completed / item.subtasks.length) * 100) : 0;
   const due = item.dueDate ? dueLabel(item.dueDate, locale, t) : null;
+  const attachedResourceCount = (item.attachmentIds?.length ?? 0) + (item.links?.length ?? 0);
   const priority = PRIORITY_META[item.priority];
 
   const style: CSSProperties = {
@@ -71,24 +137,65 @@ export function TaskCard({ item, project, dragDisabled = false, onOpen, onToggle
     zIndex: isDragging ? 5 : undefined,
   };
 
+  const addSubtask = (event: FormEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const title = subtaskDraft.trim();
+    if (!title) return;
+    onUpdateSubtasks(item.id, [...item.subtasks, { id: crypto.randomUUID(), title, completed: false }]);
+    setSubtaskDraft('');
+    setAddingSubtask(false);
+    onSetSubtasksCollapsed(item.id, false);
+  };
+
+  const reorderSubtasks = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const oldIndex = item.subtasks.findIndex((subtask) => subtask.id === active.id);
+    const newIndex = item.subtasks.findIndex((subtask) => subtask.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    onUpdateSubtasks(item.id, arrayMove(item.subtasks, oldIndex, newIndex));
+  };
+
+  const subtaskComposer = addingSubtask ? (
+    <form className="card-inline-subtask" onSubmit={addSubtask} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+      <Plus size={14} />
+      <input
+        ref={subtaskInputRef}
+        value={subtaskDraft}
+        onChange={(event) => setSubtaskDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            setAddingSubtask(false);
+            setSubtaskDraft('');
+          }
+        }}
+        placeholder={t('Add a subtask')}
+        aria-label={t('Add a subtask')}
+      />
+      <button type="submit" disabled={!subtaskDraft.trim()} aria-label={t('Add')}><Check size={14} /></button>
+    </form>
+  ) : (
+    <button
+      type="button"
+      className="card-add-subtask"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        setAddingSubtask(true);
+        window.setTimeout(() => subtaskInputRef.current?.focus(), 0);
+      }}
+    ><Plus size={14} /> {t('Add a subtask')}</button>
+  );
+
   return (
     <article
       ref={setNodeRef}
       style={style}
       className={`task-card ${dragDisabled ? 'drag-disabled' : ''} ${isDragging ? 'dragging' : ''}`}
-      onClick={() => onOpen(item)}
+      onClick={() => !isDragging && onOpen(item)}
       {...(dragDisabled ? {} : attributes)}
       {...(dragDisabled ? {} : listeners)}
     >
-      {!dragDisabled && (
-        <button
-          className="card-drag-handle"
-          aria-label={t('Drag task')}
-          onClick={(event) => event.stopPropagation()}
-          tabIndex={-1}
-        ><GripVertical size={15} /></button>
-      )}
-
       {project && (
         <div className="task-project-context" style={{ color: project.color }}>
           <i style={{ background: project.color }} />
@@ -114,42 +221,68 @@ export function TaskCard({ item, project, dragDisabled = false, onOpen, onToggle
       {item.description && <p className="card-description">{item.description}</p>}
 
       {item.subtasks.length > 0 && (
-        <div className="card-subtask-list">
-          {item.subtasks.slice(0, 3).map((subtask) => (
-            <button
-              key={subtask.id}
-              className={subtask.completed ? 'completed' : ''}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleSubtask(item.id, subtask.id);
-              }}
-              title={t(subtask.completed ? 'Mark as not complete' : 'Mark as complete')}
-            >
-              <span>{subtask.completed ? <Check size={12} /> : null}</span>
-              <em>{subtask.title}</em>
-            </button>
-          ))}
-          {item.subtasks.length > 3 && <small>+{t('{{count}} more subtasks', { count: item.subtasks.length - 3 })}</small>}
+        <div className={`card-subtask-section ${subtasksCollapsed ? 'collapsed' : ''}`}>
+          <button
+            type="button"
+            className="card-subtask-collapse"
+            aria-expanded={!subtasksCollapsed}
+            aria-label={t(subtasksCollapsed ? 'Expand subtasks' : 'Collapse subtasks')}
+            title={t(subtasksCollapsed ? 'Expand subtasks' : 'Collapse subtasks')}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSetSubtasksCollapsed(item.id, !subtasksCollapsed);
+            }}
+          >
+            <ChevronDown size={15} />
+            <span>{t('Subtasks')}</span>
+            <b className={progress === 100 ? 'complete' : ''}>
+              {progress === 100 ? <Check size={12} /> : <CheckSquare2 size={12} />}
+              {completed}/{item.subtasks.length}
+            </b>
+          </button>
+
+          {!subtasksCollapsed && (
+            <div className="card-subtask-body">
+              <DndContext sensors={subtaskSensors} collisionDetection={closestCenter} onDragEnd={reorderSubtasks}>
+                <SortableContext items={visibleSubtasks.map((subtask) => subtask.id)} strategy={verticalListSortingStrategy}>
+                  <div className="card-subtask-list">
+                    {visibleSubtasks.map((subtask) => (
+                      <SortableCardSubtask
+                        key={subtask.id}
+                        subtask={subtask}
+                        onToggle={() => onUpdateSubtasks(item.id, item.subtasks.map((value) => value.id === subtask.id ? { ...value, completed: !value.completed } : value))}
+                      />
+                    ))}
+                    {item.subtasks.length > 3 && (
+                      <button
+                        type="button"
+                        className="card-subtask-more"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => { event.stopPropagation(); setSubtasksExpanded((current) => !current); }}
+                      >{t(subtasksExpanded ? 'Show fewer subtasks' : '{{count}} more subtasks', { count: item.subtasks.length - 3 })}</button>
+                    )}
+                  </div>
+                </SortableContext>
+              </DndContext>
+
+              <div className="subtask-progress" role="progressbar" aria-valuemin={0} aria-valuemax={item.subtasks.length} aria-valuenow={completed}>
+                <div><span style={{ width: `${progress}%` }} /></div>
+              </div>
+              {subtaskComposer}
+            </div>
+          )}
         </div>
       )}
 
-      {item.subtasks.length > 0 && (
-        <div className="subtask-progress">
-          <div><span style={{ width: `${progress}%` }} /></div>
-          <small className={progress === 100 ? 'complete' : ''}>
-            {progress === 100 ? <Check size={12} /> : <CheckSquare2 size={12} />}
-            {completed}/{item.subtasks.length}
-          </small>
-        </div>
-      )}
+      {item.subtasks.length === 0 && subtaskComposer}
 
-      {(due || item.assignee || item.estimateMinutes || (item.attachmentIds?.length ?? 0) > 0) && (
+      {(due || item.assignee || item.estimateMinutes || attachedResourceCount > 0) && (
         <footer className="card-footer">
           <div className="card-footer-meta">
             {due && <span className={`due-date ${due.overdue ? 'overdue' : ''}`}><Calendar size={13} />{due.label}</span>}
             {item.estimateMinutes && <span className="task-estimate"><Clock3 size={13} />{estimateLabel(item.estimateMinutes, t)}</span>}
-            {(item.attachmentIds?.length ?? 0) > 0 && <span className="task-attachments" title={t('{{count}} attachments', { count: item.attachmentIds?.length ?? 0 })}><Paperclip size={13} />{item.attachmentIds?.length}</span>}
+            {attachedResourceCount > 0 && <span className="task-attachments" title={t('{{count}} attachments', { count: attachedResourceCount })}><Paperclip size={13} />{attachedResourceCount}</span>}
           </div>
           {item.assignee && <span className="member-avatar" style={{ background: avatarColor(item.assignee) }}>{item.assignee}</span>}
         </footer>

@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  closestCenter,
+  DndContext,
+  DragEndEvent,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import {
   AlignLeft,
   Calendar,
   Check,
@@ -12,8 +29,11 @@ import {
   Flag,
   Folder,
   FolderOpen,
+  GripVertical,
   Layers2,
+  Link2,
   Paperclip,
+  Pencil,
   Plus,
   Tag,
   Trash2,
@@ -21,9 +41,16 @@ import {
   Workflow,
   X,
 } from 'lucide-react';
-import type { KanbanColumn, Priority, Subtask, WorkItem, WorkspaceAction, WorkspaceAttachment } from '../domain/types';
+import type { KanbanColumn, Priority, Subtask, TaskLink, WorkItem, WorkspaceAction, WorkspaceAttachment } from '../domain/types';
 import { PRIORITY_META } from '../domain/workspace';
 import { useI18n } from '../i18n';
+
+type EditingResource = {
+  type: 'attachment' | 'link';
+  id: string;
+  title: string;
+  description: string;
+};
 
 type Props = {
   item: WorkItem;
@@ -31,7 +58,7 @@ type Props = {
   projectTasks: WorkItem[];
   attachments: WorkspaceAttachment[];
   onAction: (action: WorkspaceAction) => void;
-  onAddAttachments: (kind: 'files' | 'folders') => Promise<void>;
+  onAddAttachments: (kind: 'files' | 'folders') => Promise<WorkspaceAttachment[]>;
   onPreviewAttachment: (attachment: WorkspaceAttachment) => void;
   onOpenAttachment: (attachment: WorkspaceAttachment) => void;
   onRevealAttachment: (attachment: WorkspaceAttachment) => void;
@@ -52,6 +79,55 @@ function formatAttachmentSize(bytes: number, locale: string): string {
   return `${value.toLocaleString(locale, { maximumFractionDigits: value >= 10 ? 0 : 1 })} ${units[unit]}`;
 }
 
+function normalizeTaskLinkUrl(rawValue: string): string | null {
+  const value = rawValue.trim();
+  if (!value || /^(?:javascript|data|file|mailto|vbscript):/i.test(value)) return null;
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(value) && !/^https?:\/\//i.test(value)) return null;
+  try {
+    const url = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    return ['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function taskLinkTitle(url: string): string {
+  return new URL(url).hostname.replace(/^www\./i, '');
+}
+
+function displayTaskLinkUrl(url: string): string {
+  return url.replace(/^https?:\/\//i, '').replace(/\/$/, '');
+}
+
+function SortableModalSubtask({ subtask, onToggle, onDelete }: { subtask: Subtask; onToggle: () => void; onDelete: () => void }) {
+  const { t } = useI18n();
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: subtask.id });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`subtask-row ${isDragging ? 'dragging' : ''}`}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+    >
+      <button
+        type="button"
+        className="subtask-drag-handle"
+        {...attributes}
+        {...listeners}
+        aria-label={t('Reorder {{name}}', { name: subtask.title })}
+        title={t('Drag to reorder')}
+      ><GripVertical size={16} /></button>
+      <button
+        type="button"
+        className={`subtask-check ${subtask.completed ? 'checked' : ''}`}
+        onClick={onToggle}
+        title={t(subtask.completed ? 'Mark as not complete' : 'Mark as complete')}
+      >{subtask.completed ? <Check size={13} /> : <Circle size={14} />}</button>
+      <span className={subtask.completed ? 'completed' : ''}>{subtask.title}</span>
+      <button type="button" className="subtask-delete" onClick={onDelete} aria-label={t('Remove {{name}}', { name: subtask.title })}><X size={14} /></button>
+    </div>
+  );
+}
+
 export function TaskModal({ item, columns, projectTasks, attachments, onAction, onAddAttachments, onPreviewAttachment, onOpenAttachment, onRevealAttachment, onRemoveAttachment, onDelete, onClose }: Props) {
   const { locale, t } = useI18n();
   const [title, setTitle] = useState(item.title);
@@ -67,13 +143,26 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
   const [labelDraft, setLabelDraft] = useState('');
   const [subtasks, setSubtasks] = useState<Subtask[]>(item.subtasks);
   const [subtaskDraft, setSubtaskDraft] = useState('');
+  const subtaskSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const [addingAttachment, setAddingAttachment] = useState<'files' | 'folders' | null>(null);
   const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
+  const [links, setLinks] = useState<TaskLink[]>(item.links ?? []);
+  const [linkComposerOpen, setLinkComposerOpen] = useState(false);
+  const [linkDraft, setLinkDraft] = useState('');
+  const [linkTitleDraft, setLinkTitleDraft] = useState('');
+  const [linkDescriptionDraft, setLinkDescriptionDraft] = useState('');
+  const [linkError, setLinkError] = useState('');
+  const [editingResource, setEditingResource] = useState<EditingResource | null>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
+  const linkInputRef = useRef<HTMLInputElement>(null);
+  const resourceTitleInputRef = useRef<HTMLInputElement>(null);
   const initialSnapshot = useRef('');
   const savedSnapshot = useRef('');
   const estimateValue = estimateMinutes.trim() ? Math.max(0, Math.round(Number(estimateMinutes) * 60)) : undefined;
-  const snapshot = JSON.stringify({ title, description, priority, estimateValue, startDate, dueDate, dependencyIds, assignee, columnId, labels, subtasks });
+  const snapshot = JSON.stringify({ title, description, priority, estimateValue, startDate, dueDate, dependencyIds, assignee, columnId, labels, subtasks, links });
 
   if (!initialSnapshot.current) {
     initialSnapshot.current = snapshot;
@@ -96,13 +185,14 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
         assignee: assignee.trim().toUpperCase().slice(0, 3) || undefined,
         labels,
         subtasks,
+        links,
       },
     });
     if (columnId !== item.moduleData.kanban.columnId) {
       onAction({ type: 'moveItem', itemId: item.id, columnId, index: Number.MAX_SAFE_INTEGER });
     }
     savedSnapshot.current = snapshot;
-  }, [assignee, columnId, dependencyIds, description, dueDate, estimateValue, item.id, item.moduleData.kanban.columnId, labels, onAction, priority, snapshot, startDate, subtasks, title]);
+  }, [assignee, columnId, dependencyIds, description, dueDate, estimateValue, item.id, item.moduleData.kanban.columnId, labels, links, onAction, priority, snapshot, startDate, subtasks, title]);
 
   useEffect(() => {
     if (snapshot === savedSnapshot.current || !title.trim()) return;
@@ -135,6 +225,15 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
     setSubtaskDraft('');
   };
 
+  const reorderSubtasks = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    setSubtasks((current) => {
+      const oldIndex = current.findIndex((subtask) => subtask.id === active.id);
+      const newIndex = current.findIndex((subtask) => subtask.id === over.id);
+      return oldIndex < 0 || newIndex < 0 ? current : arrayMove(current, oldIndex, newIndex);
+    });
+  };
+
   const addLabel = () => {
     const clean = labelDraft.trim();
     if (clean && !labels.includes(clean)) setLabels((current) => [...current, clean]);
@@ -144,7 +243,15 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
   const addAttachments = async (kind: 'files' | 'folders') => {
     setAddingAttachment(kind);
     try {
-      await onAddAttachments(kind);
+      const added = await onAddAttachments(kind);
+      if (added.length === 1) {
+        setEditingResource({
+          type: 'attachment',
+          id: added[0].id,
+          title: added[0].title ?? '',
+          description: added[0].description ?? '',
+        });
+      }
     } finally {
       setAddingAttachment(null);
     }
@@ -157,6 +264,118 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
     } finally {
       setRemovingAttachmentId(null);
     }
+  };
+
+  const openLinkComposer = () => {
+    setLinkComposerOpen(true);
+    setLinkError('');
+    window.setTimeout(() => linkInputRef.current?.focus(), 0);
+  };
+
+  const closeLinkComposer = () => {
+    setLinkComposerOpen(false);
+    setLinkDraft('');
+    setLinkTitleDraft('');
+    setLinkDescriptionDraft('');
+    setLinkError('');
+  };
+
+  const addLink = () => {
+    const url = normalizeTaskLinkUrl(linkDraft);
+    if (!url) {
+      setLinkError(t('Enter a valid web address.'));
+      return;
+    }
+    if (links.some((link) => link.url === url)) {
+      setLinkError(t('This link is already attached.'));
+      return;
+    }
+    const link: TaskLink = {
+      id: crypto.randomUUID(),
+      title: linkTitleDraft.trim() || undefined,
+      description: linkDescriptionDraft.trim() || undefined,
+      url,
+      createdAt: new Date().toISOString(),
+    };
+    setLinks((current) => [...current, link]);
+    closeLinkComposer();
+  };
+
+  const editAttachmentDetails = (attachment: WorkspaceAttachment) => {
+    setEditingResource({
+      type: 'attachment',
+      id: attachment.id,
+      title: attachment.title ?? '',
+      description: attachment.description ?? '',
+    });
+  };
+
+  const editLinkDetails = (link: TaskLink) => {
+    setEditingResource({
+      type: 'link',
+      id: link.id,
+      title: link.title ?? '',
+      description: link.description ?? '',
+    });
+  };
+
+  useEffect(() => {
+    if (!editingResource) return;
+    const frame = window.requestAnimationFrame(() => resourceTitleInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [editingResource?.id, editingResource?.type]);
+
+  const saveResourceDetails = () => {
+    if (!editingResource) return;
+    const changes = {
+      title: editingResource.title.trim() || undefined,
+      description: editingResource.description.trim() || undefined,
+    };
+    if (editingResource.type === 'attachment') {
+      onAction({ type: 'updateAttachment', attachmentId: editingResource.id, changes });
+    } else {
+      setLinks((current) => current.map((link) => link.id === editingResource.id ? { ...link, ...changes } : link));
+    }
+    setEditingResource(null);
+  };
+
+  const renderResourceDetailsEditor = (type: EditingResource['type'], id: string) => {
+    if (!editingResource || editingResource.type !== type || editingResource.id !== id) return null;
+    return (
+      <div className="resource-details-editor" onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          setEditingResource(null);
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+          event.stopPropagation();
+          saveResourceDetails();
+        }
+      }}>
+        <label>
+          <span>{t('Title')} <em>{t('Optional')}</em></span>
+          <input
+            ref={resourceTitleInputRef}
+            value={editingResource.title}
+            onChange={(event) => setEditingResource((current) => current ? { ...current, title: event.target.value } : current)}
+            placeholder={t('Add a title…')}
+          />
+        </label>
+        <label>
+          <span>{t('Description')} <em>{t('Optional')}</em></span>
+          <textarea
+            value={editingResource.description}
+            onChange={(event) => setEditingResource((current) => current ? { ...current, description: event.target.value } : current)}
+            placeholder={t('Add a short description…')}
+            rows={2}
+          />
+        </label>
+        <div>
+          <button className="resource-details-cancel" onClick={() => setEditingResource(null)}>{t('Cancel')}</button>
+          <button className="resource-details-save" onClick={saveResourceDetails}><Check size={14} /> {t('Save details')}</button>
+        </div>
+      </div>
+    );
   };
 
   const createsCycle = (candidateId: string) => {
@@ -178,7 +397,7 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
       <section className="task-modal modal-enter" role="dialog" aria-modal="true" aria-label={t('Task details')}>
         <header className="modal-header">
           <div className="modal-context"><span style={{ background: columns.find((column) => column.id === columnId)?.color }} /> {t('Task details')}</div>
-          <button className="icon-button" aria-label={t('Close task')} onClick={onClose}><X size={19} /></button>
+          <button className="icon-button" aria-label={t('Close task')} onClick={finish}><X size={19} /></button>
         </header>
 
         <div className="task-modal-body">
@@ -205,55 +424,121 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
             <section className="form-section attachment-section">
               <div className="attachment-section-title">
                 <label><Paperclip size={17} /> {t('Attachments')}</label>
-                <span>{attachments.length}</span>
+                <span>{attachments.length + links.length}</span>
               </div>
-              {attachments.length > 0 && (
+              {(attachments.length > 0 || links.length > 0) && (
                 <div className="task-attachment-list">
                   {attachments.map((attachment) => (
                     <div className="task-attachment-row" key={attachment.id}>
                       <button className={`task-attachment-main ${attachment.kind}`} onClick={() => onPreviewAttachment(attachment)} title={t('Preview {{name}}', { name: attachment.name })}>
                         <span>{attachment.kind === 'folder' ? <Folder size={17} /> : <File size={17} />}</span>
-                        <span><strong><bdi>{attachment.name}</bdi></strong><small>{attachment.kind === 'folder' ? t('{{count}} files · {{size}}', { count: attachment.fileCount, size: formatAttachmentSize(attachment.sizeBytes, locale) }) : formatAttachmentSize(attachment.sizeBytes, locale)}</small></span>
+                        <span><strong><bdi>{attachment.title?.trim() || attachment.name}</bdi></strong><small><bdi>{attachment.description?.trim() || (attachment.kind === 'folder' ? t('{{count}} files · {{size}}', { count: attachment.fileCount, size: formatAttachmentSize(attachment.sizeBytes, locale) }) : formatAttachmentSize(attachment.sizeBytes, locale))}</bdi></small></span>
                       </button>
-                      <button className="icon-button" onClick={() => onPreviewAttachment(attachment)} title={t('Preview')} aria-label={t('Preview {{name}}', { name: attachment.name })}><Eye size={15} /></button>
-                      <button className="icon-button" onClick={() => onOpenAttachment(attachment)} title={t('Open')} aria-label={t('Open {{name}}', { name: attachment.name })}><ExternalLink size={15} /></button>
-                      <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t('Show in workspace folder')} aria-label={t('Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={15} /></button>
-                      <button className="icon-button attachment-remove" disabled={removingAttachmentId === attachment.id} onClick={() => void removeAttachment(attachment)} title={t('Remove attachment')} aria-label={t('Remove {{name}}', { name: attachment.name })}>
-                        {removingAttachmentId === attachment.id ? <span className="spinner spinner-dark" /> : <X size={15} />}
-                      </button>
+                      <div className="task-attachment-controls">
+                        <button className="icon-button" onClick={() => editAttachmentDetails(attachment)} title={t('Edit details')} aria-label={t('Edit details for {{name}}', { name: attachment.title?.trim() || attachment.name })}><Pencil size={14} /></button>
+                        <button className="icon-button" onClick={() => onPreviewAttachment(attachment)} title={t('Preview')} aria-label={t('Preview {{name}}', { name: attachment.name })}><Eye size={15} /></button>
+                        <button className="icon-button" onClick={() => onOpenAttachment(attachment)} title={t('Open')} aria-label={t('Open {{name}}', { name: attachment.name })}><ExternalLink size={15} /></button>
+                        <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t('Show in workspace folder')} aria-label={t('Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={15} /></button>
+                        <button className="icon-button attachment-remove" disabled={removingAttachmentId === attachment.id} onClick={() => void removeAttachment(attachment)} title={t('Remove attachment')} aria-label={t('Remove {{name}}', { name: attachment.name })}>
+                          {removingAttachmentId === attachment.id ? <span className="spinner spinner-dark" /> : <X size={15} />}
+                        </button>
+                      </div>
+                      {renderResourceDetailsEditor('attachment', attachment.id)}
+                    </div>
+                  ))}
+                  {links.map((link) => (
+                    <div className="task-attachment-row task-link-row" key={link.id}>
+                      <a className="task-attachment-main link" href={link.url} target="_blank" rel="noreferrer" title={t('Open {{name}}', { name: link.title?.trim() || taskLinkTitle(link.url) })}>
+                        <span><Link2 size={17} /></span>
+                        <span>
+                          <strong><bdi>{link.title?.trim() || taskLinkTitle(link.url)}</bdi></strong>
+                          <small className="task-link-url"><bdi>{displayTaskLinkUrl(link.url)}</bdi></small>
+                          {link.description?.trim() && <small className="task-resource-description"><bdi>{link.description.trim()}</bdi></small>}
+                        </span>
+                      </a>
+                      <div className="task-attachment-controls">
+                        <button className="icon-button" onClick={() => editLinkDetails(link)} title={t('Edit details')} aria-label={t('Edit details for {{name}}', { name: link.title?.trim() || taskLinkTitle(link.url) })}><Pencil size={14} /></button>
+                        <a className="icon-button" href={link.url} target="_blank" rel="noreferrer" title={t('Open')} aria-label={t('Open {{name}}', { name: link.title?.trim() || taskLinkTitle(link.url) })}><ExternalLink size={15} /></a>
+                        <button className="icon-button attachment-remove" onClick={() => setLinks((current) => current.filter((value) => value.id !== link.id))} title={t('Remove link')} aria-label={t('Remove {{name}}', { name: link.title?.trim() || taskLinkTitle(link.url) })}><X size={15} /></button>
+                      </div>
+                      {renderResourceDetailsEditor('link', link.id)}
                     </div>
                   ))}
                 </div>
               )}
               <div className="attachment-actions">
                 <button disabled={addingAttachment !== null} onClick={() => void addAttachments('files')}>
-                  {addingAttachment === 'files' ? <span className="spinner spinner-dark" /> : <File size={15} />} {t('Attach files')}
+                  {addingAttachment === 'files' ? <span className="spinner spinner-dark" /> : <File size={16} />} {t('Attach files')}
                 </button>
                 <button disabled={addingAttachment !== null} onClick={() => void addAttachments('folders')}>
-                  {addingAttachment === 'folders' ? <span className="spinner spinner-dark" /> : <Folder size={15} />} {t('Attach folder')}
+                  {addingAttachment === 'folders' ? <span className="spinner spinner-dark" /> : <Folder size={16} />} {t('Attach folder')}
+                </button>
+                <button className={linkComposerOpen ? 'active' : ''} aria-expanded={linkComposerOpen} onClick={() => linkComposerOpen ? closeLinkComposer() : openLinkComposer()}>
+                  <Link2 size={16} /> {t('Add link')}
                 </button>
               </div>
-              <p>{t('Copies are stored inside this workspace and stay linked to this task.')}</p>
+              {linkComposerOpen && (
+                <div className={`link-composer ${linkError ? 'invalid' : ''}`} onKeyDown={(event) => {
+                  if (event.key === 'Escape') { event.stopPropagation(); closeLinkComposer(); }
+                  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.stopPropagation(); addLink(); }
+                }}>
+                  <div className="link-composer-url">
+                    <Link2 size={17} />
+                    <label>
+                      <span>{t('Web address')}</span>
+                      <input
+                        ref={linkInputRef}
+                        type="url"
+                        value={linkDraft}
+                        onChange={(event) => { setLinkDraft(event.target.value); setLinkError(''); }}
+                        aria-invalid={Boolean(linkError)}
+                        placeholder={t('Paste a web address…')}
+                      />
+                    </label>
+                    <button className="icon-button" onClick={closeLinkComposer} aria-label={t('Cancel')}><X size={16} /></button>
+                  </div>
+                  <div className="link-composer-details">
+                    <label>
+                      <span>{t('Title')} <em>{t('Optional')}</em></span>
+                      <input value={linkTitleDraft} onChange={(event) => setLinkTitleDraft(event.target.value)} placeholder={t('Add a title…')} />
+                    </label>
+                    <label>
+                      <span>{t('Description')} <em>{t('Optional')}</em></span>
+                      <textarea value={linkDescriptionDraft} onChange={(event) => setLinkDescriptionDraft(event.target.value)} placeholder={t('Add a short description…')} rows={2} />
+                    </label>
+                  </div>
+                  <div className="link-composer-footer">
+                    {linkError ? <small role="alert">{linkError}</small> : <span />}
+                    <button className="link-composer-add" onClick={addLink}><Link2 size={14} /> {t('Add link')}</button>
+                  </div>
+                </div>
+              )}
+              <p>{t('Files and folders are copied into this workspace; links stay with this task.')}</p>
             </section>
 
-            <section className="form-section">
+            <section className="form-section subtask-section">
               <div className="subtask-section-title">
                 <label><CheckCircle2 size={17} /> {t('Subtasks')}</label>
-                {subtasks.length > 0 && <span>{t('{{completed}} of {{total}}', { completed, total: subtasks.length })}</span>}
+                <div className="subtask-section-meta">
+                  {subtasks.length > 1 && <small><GripVertical size={14} /> {t('Drag to reorder')}</small>}
+                  {subtasks.length > 0 && <span>{t('{{completed}} of {{total}}', { completed, total: subtasks.length })}</span>}
+                </div>
               </div>
               {subtasks.length > 0 && <div className="modal-progress"><span style={{ width: `${progress}%` }} /></div>}
-              <div className="subtask-list">
-                {subtasks.map((subtask) => (
-                  <div className="subtask-row" key={subtask.id}>
-                    <button
-                      className={`subtask-check ${subtask.completed ? 'checked' : ''}`}
-                      onClick={() => setSubtasks((current) => current.map((value) => value.id === subtask.id ? { ...value, completed: !value.completed } : value))}
-                    >{subtask.completed ? <Check size={13} /> : <Circle size={14} />}</button>
-                    <span className={subtask.completed ? 'completed' : ''}>{subtask.title}</span>
-                    <button className="subtask-delete" onClick={() => setSubtasks((current) => current.filter((value) => value.id !== subtask.id))}><X size={14} /></button>
+              <DndContext sensors={subtaskSensors} collisionDetection={closestCenter} onDragEnd={reorderSubtasks}>
+                <SortableContext items={subtasks.map((subtask) => subtask.id)} strategy={verticalListSortingStrategy}>
+                  <div className="subtask-list">
+                    {subtasks.map((subtask) => (
+                      <SortableModalSubtask
+                        key={subtask.id}
+                        subtask={subtask}
+                        onToggle={() => setSubtasks((current) => current.map((value) => value.id === subtask.id ? { ...value, completed: !value.completed } : value))}
+                        onDelete={() => setSubtasks((current) => current.filter((value) => value.id !== subtask.id))}
+                      />
+                    ))}
                   </div>
-                ))}
-              </div>
+                </SortableContext>
+              </DndContext>
               <div className="subtask-composer">
                 <Plus size={15} />
                 <input

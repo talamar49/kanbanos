@@ -4,14 +4,22 @@ import { useI18n } from '../i18n';
 
 type Props = {
   currentUrl?: string;
-  onConnect: (url: string, credentials?: GitCredentials) => Promise<void>;
+  privateRepository?: boolean;
+  hasStoredCredentials?: boolean;
+  onConnect: (url: string, credentials?: GitCredentials | null) => Promise<void>;
   onClose: () => void;
 };
 
-export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
+export function RemoteModal({
+  currentUrl,
+  privateRepository: initialPrivateRepository = false,
+  hasStoredCredentials = false,
+  onConnect,
+  onClose,
+}: Props) {
   const { t } = useI18n();
   const [url, setUrl] = useState(currentUrl ?? '');
-  const [privateRepository, setPrivateRepository] = useState(false);
+  const [privateRepository, setPrivateRepository] = useState(initialPrivateRepository);
   const [gitUsername, setGitUsername] = useState('');
   const [gitToken, setGitToken] = useState('');
   const [busy, setBusy] = useState(false);
@@ -28,7 +36,8 @@ export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
       setError(t('Enter a Git repository URL.'));
       return;
     }
-    if (privateRepository && !gitToken.trim()) {
+    const canReuseStoredCredentials = hasStoredCredentials && url.trim() === currentUrl?.trim();
+    if (privateRepository && !gitToken.trim() && !canReuseStoredCredentials) {
       setError(t('Enter a personal access token or password to continue.'));
       return;
     }
@@ -37,7 +46,11 @@ export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
     try {
       await onConnect(
         url.trim(),
-        privateRepository ? { username: gitUsername.trim(), token: gitToken } : undefined,
+        privateRepository
+          ? gitToken.trim()
+            ? { username: gitUsername.trim(), token: gitToken }
+            : undefined
+          : null,
       );
       onClose();
     } catch (connectionError) {
@@ -106,7 +119,9 @@ export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
                     value={gitToken}
                     onChange={(event) => { setGitToken(event.target.value); setError(''); }}
                     onKeyDown={(event) => event.key === 'Enter' && void connect()}
-                    placeholder={t('Token with repository access')}
+                    placeholder={t(hasStoredCredentials && url.trim() === currentUrl?.trim()
+                      ? 'Stored credential — leave blank to keep it'
+                      : 'Token with repository access')}
                     autoComplete="off"
                     dir="ltr"
                   />
@@ -116,7 +131,7 @@ export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
             </div>
           )}
           {error && <p className="form-error">{error}</p>}
-          <div className="remote-note"><ShieldCheck size={16} /><span>{t(privateRepository ? 'Credentials are kept out of the remote URL and encrypted when stored.' : 'Kanbanos verifies the remote when you add it and uses your existing Git credentials for sync.')}</span></div>
+          <div className="remote-note"><ShieldCheck size={16} /><span>{t(privateRepository ? 'Credentials stay in a permission-restricted, git-ignored workspace file and use system encryption when available.' : 'Kanbanos verifies the remote when you add it and uses your existing Git credentials for sync.')}</span></div>
         </div>
         <footer className="simple-modal-footer">
           <button className="button button-secondary" onClick={onClose} disabled={busy}>{t('Not now')}</button>

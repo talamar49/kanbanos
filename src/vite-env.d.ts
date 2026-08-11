@@ -4,6 +4,8 @@ type RepositoryConnection = {
   repositoryPath: string;
   remoteUrl?: string;
   displayName: string;
+  privateRemote?: boolean;
+  hasStoredCredentials?: boolean;
 };
 
 type GitCredentials = {
@@ -62,9 +64,9 @@ interface Window {
       openRecent: (repositoryPath: string) => Promise<RepositoryConnection>;
       removeRecent: (repositoryPath: string) => Promise<void>;
       createLocal: (displayName: string, language?: 'en' | 'he') => Promise<RepositoryConnection | null>;
-      connectRemote: (remoteUrl: string, credentials?: GitCredentials) => Promise<RepositoryConnection>;
+      connectRemote: (remoteUrl: string, credentials?: GitCredentials | null) => Promise<RepositoryConnection>;
       chooseLocal: (language?: 'en' | 'he') => Promise<RepositoryConnection | null>;
-      addRemote: (remoteUrl: string, credentials?: GitCredentials) => Promise<RepositoryConnection>;
+      addRemote: (remoteUrl: string, credentials?: GitCredentials | null) => Promise<RepositoryConnection>;
       disconnect: () => Promise<void>;
       reveal: () => Promise<void>;
     };
