@@ -8,6 +8,7 @@ type Props = {
   hasStoredCredentials?: boolean;
   onConnect: (url: string, credentials?: GitCredentials | null) => Promise<void>;
   onClose: () => void;
+  mobile?: boolean;
 };
 
 export function RemoteModal({
@@ -16,6 +17,7 @@ export function RemoteModal({
   hasStoredCredentials = false,
   onConnect,
   onClose,
+  mobile = false,
 }: Props) {
   const { t } = useI18n();
   const [url, setUrl] = useState(currentUrl ?? '');
@@ -77,6 +79,10 @@ export function RemoteModal({
             <GitBranch size={17} />
             <input
               id="remote-url"
+              type="url"
+              inputMode="url"
+              autoCapitalize="none"
+              autoCorrect="off"
               value={url}
               onChange={(event) => { setUrl(event.target.value); setError(''); }}
               onKeyDown={(event) => event.key === 'Enter' && void connect()}
@@ -127,11 +133,17 @@ export function RemoteModal({
                   />
                 </div>
               </label>
-              <p className="private-auth-hint">{t('SSH URLs use your existing SSH key and do not need a token here.')}</p>
+              <p className="private-auth-hint">{t(mobile
+                ? 'Mobile sync uses HTTPS. Use a personal access token for private repositories.'
+                : 'SSH URLs use your existing SSH key and do not need a token here.')}</p>
             </div>
           )}
           {error && <p className="form-error">{error}</p>}
-          <div className="remote-note"><ShieldCheck size={16} /><span>{t(privateRepository ? 'Credentials stay in a permission-restricted, git-ignored workspace file and use system encryption when available.' : 'Kanbanos verifies the remote when you add it and uses your existing Git credentials for sync.')}</span></div>
+          <div className="remote-note"><ShieldCheck size={16} /><span>{t(privateRepository
+            ? mobile
+              ? 'Credentials are protected by iOS Keychain or Android Keystore and never committed to Git.'
+              : 'Credentials stay in a permission-restricted, git-ignored workspace file and use system encryption when available.'
+            : 'Kanbanos verifies the remote when you add it and uses your existing Git credentials for sync.')}</span></div>
         </div>
         <footer className="simple-modal-footer">
           <button className="button button-secondary" onClick={onClose} disabled={busy}>{t('Not now')}</button>

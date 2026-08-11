@@ -192,6 +192,7 @@ describe('rich task details', () => {
     const addLinkButtons = screen.getAllByRole('button', { name: 'Add link' });
     await user.click(addLinkButtons[addLinkButtons.length - 1]);
     expect(screen.getByText('example.com/release')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Close task' }));
 

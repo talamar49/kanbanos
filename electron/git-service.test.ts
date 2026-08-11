@@ -161,6 +161,9 @@ describe('Git workspace persistence', () => {
     const local = await publisher.createLocal('Publisher');
     const connected = await publisher.addRemote(remote);
     expect(connected.remoteUrl).toBe(remote);
+    const emptyFolder = path.join(temporaryDirectory, 'empty-reference');
+    await fs.mkdir(emptyFolder);
+    const [emptyAttachment] = await publisher.importAttachments([emptyFolder]);
 
     const document = { schemaVersion: 1, workspace: { name: 'Shared' }, projects: [], items: {} };
     const saved = await publisher.saveWorkspace(document);
@@ -171,6 +174,8 @@ describe('Git workspace persistence', () => {
     const cloneConnection = await clone.connectRemote(remote);
     expect(cloneConnection.remoteUrl).toBe(remote);
     await expect(clone.loadWorkspace()).resolves.toEqual(document);
+    const clonedEmptyFolder = await clone.resolveAttachmentPath(emptyAttachment.relativePath);
+    await expect(fs.readdir(clonedEmptyFolder)).resolves.toContain('.kanbanos-folder');
   });
 
   it('commits every managed workspace file while excluding credentials and unrelated repository files', async () => {

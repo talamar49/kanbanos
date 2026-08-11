@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -58,6 +58,39 @@ function renderApp() {
 }
 
 describe('Kanbanos app integration', () => {
+  it('provides compact navigation and a mobile drawer without changing desktop workflows', async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: true,
+      media: '(max-width: 760px)',
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    desktopApi();
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click(await screen.findByRole('button', { name: 'Create a new workspace' }));
+    await user.type(screen.getByLabelText('Workspace name'), 'Pocket plans');
+    await user.click(screen.getByRole('button', { name: 'Choose location' }));
+
+    const mobileNavigation = await screen.findByRole('navigation', { name: 'Mobile navigation' });
+    expect(document.documentElement).toHaveClass('compact-layout');
+    expect(within(mobileNavigation).getByRole('button', { name: 'Work' })).toHaveAttribute('aria-current', 'page');
+
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(document.querySelector('.sidebar')).toHaveClass('mobile-open');
+    await user.click(screen.getByRole('button', { name: 'Close navigation', expanded: true }));
+    expect(document.querySelector('.sidebar')).not.toHaveClass('mobile-open');
+
+    await user.click(within(mobileNavigation).getByRole('button', { name: 'Timeline' }));
+    expect(await screen.findByText(/Plan work, connect dependencies/)).toBeInTheDocument();
+  });
+
   it('creates a workspace, captures a task, and persists it through the desktop bridge', async () => {
     const user = userEvent.setup();
     const { api } = desktopApi();

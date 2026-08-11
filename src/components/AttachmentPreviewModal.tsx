@@ -24,6 +24,7 @@ type Props = {
   onClose: () => void;
   onOpen: (attachment: WorkspaceAttachment) => void;
   onReveal: (attachment: WorkspaceAttachment) => void;
+  mobile?: boolean;
 };
 
 function formatSize(bytes: number, locale: string): string {
@@ -47,7 +48,7 @@ function previewIcon(preview?: AttachmentPreview) {
   return <FileText size={20} />;
 }
 
-export function AttachmentPreviewModal({ attachment, onClose, onOpen, onReveal }: Props) {
+export function AttachmentPreviewModal({ attachment, onClose, onOpen, onReveal, mobile = false }: Props) {
   const { direction, locale, t } = useI18n();
   const rootTarget = useMemo<PreviewTarget>(() => ({ name: attachment.name, relativePath: attachment.relativePath, kind: attachment.kind }), [attachment]);
   const [history, setHistory] = useState<PreviewTarget[]>([rootTarget]);
@@ -107,8 +108,8 @@ export function AttachmentPreviewModal({ attachment, onClose, onOpen, onReveal }
             <div><small>{t('Attachment preview')}</small><strong><bdi>{target.name}</bdi></strong></div>
           </div>
           <div className="attachment-preview-actions">
-            <button className="button button-secondary" onClick={() => onReveal(currentAttachment)}><FolderOpen size={17} /> {t('Show in folder')}</button>
-            <button className="button button-primary" onClick={() => onOpen(currentAttachment)}><ExternalLink size={17} /> {t('Open file')}</button>
+            {!mobile && <button className="button button-secondary" onClick={() => onReveal(currentAttachment)}><FolderOpen size={17} /> {t('Show in folder')}</button>}
+            <button className="button button-primary" onClick={() => onOpen(currentAttachment)}><ExternalLink size={17} /> {t(mobile ? 'Share file' : 'Open file')}</button>
             <button className="icon-button preview-close" onClick={onClose} aria-label={t('Close preview')}><X size={21} /></button>
           </div>
         </header>
@@ -145,7 +146,7 @@ export function AttachmentPreviewModal({ attachment, onClose, onOpen, onReveal }
               </div>
             </div>
           )}
-          {!loading && preview?.type === 'unsupported' && <div className="preview-state"><File size={42} /><strong>{t('No in-app preview for this format yet')}</strong><p>{t('You can still open it with the default app on your computer.')}</p><button className="button button-primary" onClick={() => onOpen(currentAttachment)}><ExternalLink size={17} /> {t('Open file')}</button></div>}
+          {!loading && preview?.type === 'unsupported' && <div className="preview-state"><File size={42} /><strong>{t('No in-app preview for this format yet')}</strong><p>{t(mobile ? 'You can still share it with another app on this device.' : 'You can still open it with the default app on your computer.')}</p><button className="button button-primary" onClick={() => onOpen(currentAttachment)}><ExternalLink size={17} /> {t(mobile ? 'Share file' : 'Open file')}</button></div>}
         </div>
       </section>
     </div>

@@ -26,6 +26,7 @@ type Props = {
   onPreviewAttachment: (attachment: WorkspaceAttachment) => void;
   onOpenAttachment: (attachment: WorkspaceAttachment) => void;
   onRevealAttachment: (attachment: WorkspaceAttachment) => void;
+  mobile?: boolean;
 };
 
 type AttachmentRow = {
@@ -45,7 +46,7 @@ function formatSize(bytes: number, locale: string): string {
   return `${value.toLocaleString(locale, { maximumFractionDigits: value >= 10 ? 0 : 1 })} ${units[unit]}`;
 }
 
-export function FilesView({ document, saveState, dirty, onSave, onOpenTask, onPreviewAttachment, onOpenAttachment, onRevealAttachment }: Props) {
+export function FilesView({ document, saveState, dirty, onSave, onOpenTask, onPreviewAttachment, onOpenAttachment, onRevealAttachment, mobile = false }: Props) {
   const { locale, t } = useI18n();
   const [search, setSearch] = useState('');
   const projectById = new Map(document.projects.map((project) => [project.id, project]));
@@ -123,8 +124,8 @@ export function FilesView({ document, saveState, dirty, onSave, onOpenTask, onPr
                 <time>{new Date(attachment.createdAt).toLocaleDateString(locale, { month: 'short', day: 'numeric', year: 'numeric' })}</time>
                 <div className="file-actions">
                   <button className="icon-button" onClick={() => onPreviewAttachment(attachment)} title={t('Preview')} aria-label={t('Preview {{name}}', { name: attachment.name })}><Eye size={16} /></button>
-                  <button className="icon-button" onClick={() => onOpenAttachment(attachment)} title={t('Open')} aria-label={t('Open {{name}}', { name: attachment.name })}><ExternalLink size={16} /></button>
-                  <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t('Show in workspace folder')} aria-label={t('Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={16} /></button>
+                  <button className="icon-button" onClick={() => onOpenAttachment(attachment)} title={t(mobile ? 'Share' : 'Open')} aria-label={t(mobile ? 'Share {{name}}' : 'Open {{name}}', { name: attachment.name })}><ExternalLink size={16} /></button>
+                  {!mobile && <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t('Show in workspace folder')} aria-label={t('Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={16} /></button>}
                 </div>
               </div>
             ))}

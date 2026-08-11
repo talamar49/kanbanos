@@ -4,6 +4,21 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Native Android and iOS applications with offline Git workspaces, secure credential storage, attachment import/export, conflict handling, and mobile lifecycle support.
+- Responsive phone and tablet navigation, touch-safe drag handles, full-screen task workspaces, and mobile layouts for Board, List, Timeline, Canvas, Roadmap, Files, onboarding, and previews.
+
+### Improved
+
+- Added portable `.kanbanos.zip` workspace export/import, hardened credential exclusion, binary-safe native HTTPS Git transport, and HTTPS normalization for mobile remotes.
+- Preserved the existing Electron desktop experience while sharing the workspace format, localization, themes, and domain behavior across platforms.
+- Preserved empty attachment folders through Git and made app-owned mobile workspace removal explicit and durable.
+
+### Delivery
+
+- Added tested Android APK and iOS Simulator builds, checksums, native branding, synchronized versions, and mobile assets to GitHub Actions and GitHub Releases.
+
 ## [0.2.0] - 2026-08-11
 
 ### Added

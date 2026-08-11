@@ -124,6 +124,7 @@ function RoadmapCard({
   onEdit,
   onOpen,
   onOpenTask,
+  onMoveHorizon,
 }: {
   project: Project;
   progress: ProjectProgress;
@@ -132,9 +133,10 @@ function RoadmapCard({
   onEdit: () => void;
   onOpen: () => void;
   onOpenTask: (item: WorkItem) => void;
+  onMoveHorizon: (horizon: RoadmapHorizon) => void;
 }) {
   const { locale, t } = useI18n();
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setActivatorNodeRef, setNodeRef, transform, isDragging } = useDraggable({
     id: `roadmap-project:${project.id}`,
     data: { type: 'roadmap-project', projectId: project.id },
   });
@@ -143,11 +145,17 @@ function RoadmapCard({
       ref={setNodeRef}
       className={`roadmap-card ${isDragging ? 'dragging' : ''} ${recentlyMoved ? 'just-moved' : ''}`}
       style={{ '--project-color': project.color, transform: CSS.Translate.toString(transform) } as CSSProperties}
-      aria-label={t('Move {{name}}', { name: project.name })}
-      {...attributes}
-      {...listeners}
     >
       <div className="roadmap-card-top">
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          className="roadmap-card-drag-handle"
+          aria-label={t('Move {{name}}', { name: project.name })}
+          title={t('Drag to move')}
+          {...attributes}
+          {...listeners}
+        ><GripVertical size={17} /></button>
         <span className="roadmap-project-mark" style={{ background: `${project.color}18`, color: project.color }}><Flag size={19} /></span>
         <div><h3>{project.name}</h3><p>{project.description || t('A focused project with room to grow.')}</p></div>
         <button className="icon-button" onClick={onEdit} aria-label={t('Edit {{name}}', { name: project.name })}><Ellipsis size={18} /></button>
@@ -165,6 +173,13 @@ function RoadmapCard({
           </button>
         )) : <p>{t(progress.tasks ? 'All project tasks are complete.' : 'No tasks yet—add the first concrete step.')}</p>}
       </div>
+
+      <label className="mobile-roadmap-horizon">
+        <span>{t('Planning horizon')}</span>
+        <select value={horizonFor(project)} onChange={(event) => onMoveHorizon(event.target.value as RoadmapHorizon)}>
+          {ROADMAP_HORIZONS.map((horizon) => <option key={horizon} value={horizon}>{t(horizon)}</option>)}
+        </select>
+      </label>
 
       <footer>
         <span className={project.targetDate && new Date(`${project.targetDate}T23:59:59`).getTime() < Date.now() ? 'overdue' : ''}>
@@ -310,6 +325,7 @@ export function RoadmapView({ document, saveState, dirty, onSave, onAddProject, 
                         onEdit={() => onEditProject(project.id)}
                         onOpen={() => onOpenProject(project.id)}
                         onOpenTask={onOpenTask}
+                        onMoveHorizon={(horizon) => onMoveProject(project.id, targetDateFor(horizon))}
                       />
                     ))}
                     {horizonProjects.length === 0 && <div className="roadmap-empty"><CircleDashed size={29} /><strong>{t('Nothing planned here yet')}</strong><span>{t('Drag an initiative here, or create one with a useful target date.')}</span></div>}

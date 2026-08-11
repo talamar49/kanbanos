@@ -94,6 +94,12 @@ describe('attachment previews', () => {
       expect(preview.entries.every((entry) => !entry.name.includes('linked'))).toBe(true);
       expect(preview.truncated).toBe(false);
     }
+
+    const emptyFolder = path.join(temporaryDirectory, 'empty-reference');
+    await fs.mkdir(emptyFolder);
+    await fs.writeFile(path.join(emptyFolder, '.kanbanos-folder'), '');
+    const emptyPreview = await createAttachmentPreview(emptyFolder, '.kanbanos/content/empty-reference', 'unused');
+    expect(emptyPreview).toMatchObject({ type: 'folder', entries: [] });
   });
 
   it('extracts Word paragraphs and decodes XML entities', async () => {

@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 const DATA_DIRECTORY = '.kanbanos';
 const WORKSPACE_FILE = `${DATA_DIRECTORY}/workspace.json`;
 const ATTACHMENTS_DIRECTORY = `${DATA_DIRECTORY}/content/attachments`;
+const EMPTY_FOLDER_MARKER = '.kanbanos-folder';
 const SETTINGS_FILE = 'connection.json';
 const LEGACY_CREDENTIALS_FILE = 'credentials.json';
 const CREDENTIALS_FILE = `${DATA_DIRECTORY}/credentials.json`;
@@ -633,6 +634,9 @@ export class GitWorkspaceService {
             force: false,
             filter: async (candidate) => !(await fs.lstat(candidate)).isSymbolicLink(),
           });
+          if (stats.kind === 'folder' && stats.fileCount === 0) {
+            await fs.writeFile(path.join(destination, EMPTY_FOLDER_MARKER), '');
+          }
           imported.push({
             id,
             name,

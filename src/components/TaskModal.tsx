@@ -65,6 +65,7 @@ type Props = {
   onRemoveAttachment: (attachment: WorkspaceAttachment) => Promise<void>;
   onDelete: () => Promise<boolean>;
   onClose: () => void;
+  mobile?: boolean;
 };
 
 function formatAttachmentSize(bytes: number, locale: string): string {
@@ -128,7 +129,7 @@ function SortableModalSubtask({ subtask, onToggle, onDelete }: { subtask: Subtas
   );
 }
 
-export function TaskModal({ item, columns, projectTasks, attachments, onAction, onAddAttachments, onPreviewAttachment, onOpenAttachment, onRevealAttachment, onRemoveAttachment, onDelete, onClose }: Props) {
+export function TaskModal({ item, columns, projectTasks, attachments, onAction, onAddAttachments, onPreviewAttachment, onOpenAttachment, onRevealAttachment, onRemoveAttachment, onDelete, onClose, mobile = false }: Props) {
   const { locale, t } = useI18n();
   const [title, setTitle] = useState(item.title);
   const [description, setDescription] = useState(item.description);
@@ -437,8 +438,8 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
                       <div className="task-attachment-controls">
                         <button className="icon-button" onClick={() => editAttachmentDetails(attachment)} title={t('Edit details')} aria-label={t('Edit details for {{name}}', { name: attachment.title?.trim() || attachment.name })}><Pencil size={14} /></button>
                         <button className="icon-button" onClick={() => onPreviewAttachment(attachment)} title={t('Preview')} aria-label={t('Preview {{name}}', { name: attachment.name })}><Eye size={15} /></button>
-                        <button className="icon-button" onClick={() => onOpenAttachment(attachment)} title={t('Open')} aria-label={t('Open {{name}}', { name: attachment.name })}><ExternalLink size={15} /></button>
-                        <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t('Show in workspace folder')} aria-label={t('Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={15} /></button>
+                        <button className="icon-button" onClick={() => onOpenAttachment(attachment)} title={t(mobile ? 'Share' : 'Open')} aria-label={t(mobile ? 'Share {{name}}' : 'Open {{name}}', { name: attachment.name })}><ExternalLink size={15} /></button>
+                        {!mobile && <button className="icon-button" onClick={() => onRevealAttachment(attachment)} title={t('Show in workspace folder')} aria-label={t('Show {{name}} in workspace folder', { name: attachment.name })}><FolderOpen size={15} /></button>}
                         <button className="icon-button attachment-remove" disabled={removingAttachmentId === attachment.id} onClick={() => void removeAttachment(attachment)} title={t('Remove attachment')} aria-label={t('Remove {{name}}', { name: attachment.name })}>
                           {removingAttachmentId === attachment.id ? <span className="spinner spinner-dark" /> : <X size={15} />}
                         </button>
@@ -489,6 +490,9 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
                       <input
                         ref={linkInputRef}
                         type="url"
+                        inputMode="url"
+                        autoCapitalize="none"
+                        autoCorrect="off"
                         value={linkDraft}
                         onChange={(event) => { setLinkDraft(event.target.value); setLinkError(''); }}
                         aria-invalid={Boolean(linkError)}
@@ -624,7 +628,7 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
           <button className="button delete-task" onClick={() => void (async () => {
             if (window.confirm(t('Delete this task? This cannot be undone after the workspace is saved.')) && await onDelete()) onClose();
           })()}><Trash2 size={15} /> {t('Delete')}</button>
-          <div><span className={snapshot === savedSnapshot.current ? 'autosave-state' : 'autosave-state saving'}>{snapshot === savedSnapshot.current ? <><Check size={12} /> {t('Saved automatically')}</> : <><span className="spinner spinner-dark" /> {t('Saving changes')}</>}</span><button className="button button-secondary" onClick={finish}>{t('Done button')}</button></div>
+          <div><span className={snapshot === savedSnapshot.current ? 'autosave-state' : 'autosave-state saving'}>{snapshot === savedSnapshot.current ? <><Check size={12} /> {t('Saved automatically')}</> : <><span className="spinner spinner-dark" /> {t('Saving changes')}</>}</span><button className="button button-secondary" onClick={finish}>{t('Done editing')}</button></div>
         </footer>
       </section>
     </div>

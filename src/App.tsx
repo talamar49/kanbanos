@@ -6,6 +6,7 @@ import { ConflictDialog } from './components/ConflictDialog';
 import { FilesView } from './components/FilesView';
 import { KanbanBoard } from './components/KanbanBoard';
 import { ListView } from './components/ListView';
+import { MobileNavigation } from './components/MobileNavigation';
 import { Onboarding } from './components/Onboarding';
 import { ProjectModal } from './components/ProjectModal';
 import { RemoteModal } from './components/RemoteModal';
@@ -17,6 +18,8 @@ import { TimelineView } from './components/TimelineView';
 import type { CanvasPoint, TaskDraft, WorkspaceAction, WorkspaceAttachment, WorkspaceDocument, WorkspaceView } from './domain/types';
 import { createCanvasNode, createEmptyWorkspace, createWorkItem, isWorkspaceDocument, normalizeWorkspaceDocument, workspaceReducer } from './domain/workspace';
 import { useI18n } from './i18n';
+import { isNativeMobile } from './platform/runtime';
+import { useCompactLayout } from './platform/useCompactLayout';
 
 type BootState = 'loading' | 'onboarding' | 'ready';
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
@@ -36,6 +39,7 @@ function LoadingScreen() {
 
 export default function App() {
   const { language, t } = useI18n();
+  const compactLayout = useCompactLayout();
   const [bootState, setBootState] = useState<BootState>('loading');
   const [connection, setConnection] = useState<RepositoryConnection | null>(null);
   const [document, setDocument] = useState<WorkspaceDocument>(() => createEmptyWorkspace());
@@ -52,6 +56,7 @@ export default function App() {
   const [recentWorkspaces, setRecentWorkspaces] = useState<RepositoryConnection[]>([]);
   const [conflicts, setConflicts] = useState<GitConflict[] | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const revisionRef = useRef(0);
   const saveInFlightRef = useRef(false);
 
@@ -196,6 +201,11 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleShortcut);
   }, [save]);
 
+  useEffect(() => {
+    window.document.documentElement.classList.toggle('compact-layout', compactLayout);
+    return () => window.document.documentElement.classList.remove('compact-layout');
+  }, [compactLayout]);
+
   const createLocal = async (name: string) => {
     const nextConnection = window.kanbanos
       ? await window.kanbanos.repository.createLocal(name, language)
@@ -225,8 +235,13 @@ export default function App() {
   };
 
   const removeRecent = async (repositoryPath: string) => {
-    await window.kanbanos?.repository.removeRecent(repositoryPath);
-    setRecentWorkspaces((current) => current.filter((workspace) => workspace.repositoryPath !== repositoryPath));
+    if (isNativeMobile() && !window.confirm(t('Remove this workspace and its on-device files? Export a workspace package first if you want to keep a portable copy.'))) return;
+    try {
+      await window.kanbanos?.repository.removeRecent(repositoryPath);
+      setRecentWorkspaces((current) => current.filter((workspace) => workspace.repositoryPath !== repositoryPath));
+    } catch (error) {
+      notify(error instanceof Error ? t(error.message) : t('Could not remove this workspace.'), 'error');
+    }
   };
 
   const addRemote = async (url: string, credentials?: GitCredentials | null) => {
@@ -247,13 +262,17 @@ export default function App() {
 
   const disconnect = async () => {
     if (!window.confirm(t('Disconnect this workspace? Your repository and all of its data will remain untouched.'))) return;
-    await window.kanbanos?.repository.disconnect();
-    setConnection(null);
-    if (window.kanbanos) setRecentWorkspaces(await window.kanbanos.repository.listRecent());
-    setBootState('onboarding');
-    setSaveState('idle');
-    setSyncError('');
-    setDirty(false);
+    try {
+      await window.kanbanos?.repository.disconnect();
+      setConnection(null);
+      if (window.kanbanos) setRecentWorkspaces(await window.kanbanos.repository.listRecent());
+      setBootState('onboarding');
+      setSaveState('idle');
+      setSyncError('');
+      setDirty(false);
+    } catch (error) {
+      notify(error instanceof Error ? t(error.message) : t('Could not remove this workspace.'), 'error');
+    }
   };
 
   const resolveConflict = async (strategy: 'local' | 'remote') => {
@@ -426,6 +445,45 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleQuickCapture);
   }, [activeProject, activeView, document.modules.kanban.projects]);
 
+  useEffect(() => {
+    if (!isNativeMobile()) return;
+    let disposed = false;
+    const removers: Array<() => Promise<void>> = [];
+    void Promise.all([import('@capacitor/app'), import('@capacitor/network')]).then(async ([{ App: NativeApp }, { Network }]) => {
+      if (disposed) return;
+      const handles = await Promise.all([
+        NativeApp.addListener('appStateChange', ({ isActive }) => {
+          if (!isActive && dirty) void save();
+        }),
+        NativeApp.addListener('backButton', () => {
+          if (mobileMenuOpen) setMobileMenuOpen(false);
+          else if (remoteModalOpen) setRemoteModalOpen(false);
+          else if (projectModal) setProjectModal(null);
+          else if (previewAttachment) setPreviewAttachment(null);
+          else if (openTaskId) setOpenTaskId(null);
+          else if (taskComposer) { setTaskComposer(null); setPendingCanvasTask(null); }
+          else if (conflicts) setConflicts(null);
+          else if (activeView !== 'board') setActiveView('board');
+          else void NativeApp.minimizeApp();
+        }),
+        Network.addListener('networkStatusChange', ({ connected }) => {
+          if (connected && connection?.remoteUrl && saveState === 'error') void save();
+        }),
+      ]);
+      if (disposed) {
+        for (const handle of handles) void handle.remove();
+      } else {
+        removers.push(...handles.map((handle) => () => handle.remove()));
+      }
+    }).catch((error: unknown) => {
+      console.error('Could not initialize mobile lifecycle listeners.', error);
+    });
+    return () => {
+      disposed = true;
+      for (const remove of removers) void remove();
+    };
+  }, [activeView, conflicts, connection?.remoteUrl, dirty, mobileMenuOpen, openTaskId, previewAttachment, projectModal, remoteModalOpen, save, saveState, taskComposer]);
+
   if (bootState === 'loading') return <LoadingScreen />;
   if (bootState === 'onboarding' || !connection) {
     return (
@@ -438,6 +496,7 @@ export default function App() {
           onCreateLocal={createLocal}
           onConnectRemote={connectRemote}
           onChooseLocal={chooseLocal}
+          mobile={isNativeMobile()}
         />
       </>
     );
@@ -462,9 +521,23 @@ export default function App() {
         hasRemote={Boolean(connection.remoteUrl)}
         onAddRemote={() => setRemoteModalOpen(true)}
         onRetrySync={() => void save()}
-        onRevealRepository={() => void window.kanbanos?.repository.reveal()}
+        onRevealRepository={() => void window.kanbanos?.repository.reveal().catch((error: unknown) => {
+          notify(error instanceof Error ? t(error.message) : t('Could not export or open this workspace.'), 'error');
+        })}
         onDisconnect={() => void disconnect()}
+        mobileOpen={mobileMenuOpen}
+        onMobileClose={() => setMobileMenuOpen(false)}
+        mobile={isNativeMobile()}
       />
+      {compactLayout && (
+        <MobileNavigation
+          activeView={activeView}
+          activeProject={activeProject}
+          menuOpen={mobileMenuOpen}
+          onOpenMenu={() => setMobileMenuOpen((open) => !open)}
+          onChangeView={(view) => { setActiveView(view); setMobileMenuOpen(false); }}
+        />
+      )}
       {activeView === 'board' && (
         <KanbanBoard
           document={document}
@@ -548,6 +621,7 @@ export default function App() {
           onPreviewAttachment={setPreviewAttachment}
           onOpenAttachment={(attachment) => void openAttachment(attachment)}
           onRevealAttachment={(attachment) => void revealAttachment(attachment)}
+          mobile={isNativeMobile()}
         />
       )}
 
@@ -578,6 +652,7 @@ export default function App() {
           onRemoveAttachment={removeTaskAttachment}
           onDelete={() => deleteTask(openTask)}
           onClose={() => setOpenTaskId(null)}
+          mobile={isNativeMobile()}
         />
       )}
       {previewAttachment && (
@@ -587,6 +662,7 @@ export default function App() {
             onClose={() => setPreviewAttachment(null)}
             onOpen={(attachment) => void openAttachment(attachment)}
             onReveal={(attachment) => void revealAttachment(attachment)}
+            mobile={isNativeMobile()}
           />
         </Suspense>
       )}
@@ -597,6 +673,7 @@ export default function App() {
           hasStoredCredentials={Boolean(connection.hasStoredCredentials)}
           onConnect={addRemote}
           onClose={() => setRemoteModalOpen(false)}
+          mobile={isNativeMobile()}
         />
       )}
       {projectModal && (

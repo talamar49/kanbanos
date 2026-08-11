@@ -19,6 +19,7 @@ import {
 import kanbanosLogo from '../assets/kanbanos-mascot.png';
 import type { Project, WorkspaceDocument, WorkspaceView } from '../domain/types';
 import { useI18n } from '../i18n';
+import { PreferencesControls } from './PreferencesControls';
 
 type SyncState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
 
@@ -38,6 +39,9 @@ type Props = {
   onRetrySync: () => void;
   onRevealRepository: () => void;
   onDisconnect: () => void;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
+  mobile?: boolean;
 };
 
 export function Sidebar({
@@ -56,6 +60,9 @@ export function Sidebar({
   onRetrySync,
   onRevealRepository,
   onDisconnect,
+  mobileOpen = false,
+  onMobileClose,
+  mobile = false,
 }: Props) {
   const { direction, t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -75,7 +82,15 @@ export function Sidebar({
     Object.values(document.items).filter((item) => item.projectId === projectId).length;
 
   return (
-    <aside className="sidebar">
+    <>
+      <button
+        type="button"
+        className={`mobile-sidebar-backdrop ${mobileOpen ? 'visible' : ''}`}
+        aria-label={t('Close navigation')}
+        tabIndex={mobileOpen ? 0 : -1}
+        onClick={onMobileClose}
+      />
+      <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
       <div className="sidebar-brand">
         <span className="brand-mark brand-mascot"><img src={kanbanosLogo} alt={t('Kanbanos mascot')} /></span>
         <span className="brand-name">Kanbanos</span>
@@ -93,7 +108,7 @@ export function Sidebar({
         {menuOpen && (
           <div className="popover workspace-menu scale-in">
             <button onClick={() => { onAddRemote(); setMenuOpen(false); }}><Cloud size={15} /> {t(hasRemote ? 'Change remote repository' : 'Add remote repository')}</button>
-            <button onClick={onRevealRepository}><FolderOpen size={15} /> {t('Open repository folder')}</button>
+            <button onClick={() => { onRevealRepository(); setMenuOpen(false); }}><FolderOpen size={15} /> {t(mobile ? 'Export workspace package' : 'Open repository folder')}</button>
             <button><Settings2 size={15} /> {t('Workspace settings')} <span className="coming-pill">{t('Soon')}</span></button>
             <div className="popover-separator" />
             <button className="danger-option" onClick={onDisconnect}><LogOut size={15} /> {t('Disconnect workspace')}</button>
@@ -103,11 +118,11 @@ export function Sidebar({
 
       <nav className="primary-nav" aria-label={t('Workspace views')}>
         <p className="nav-label">{t('Workspace')}</p>
-        <button className={`nav-item ${activeView === 'board' || activeView === 'list' ? 'active' : ''}`} onClick={() => onChangeView('board')}><Columns3 size={17} /><span>{t('Project work')}</span></button>
-        <button className={`nav-item ${activeView === 'timeline' ? 'active' : ''}`} onClick={() => onChangeView('timeline')}><CalendarRange size={17} /><span>{t('Timeline')}</span></button>
-        <button className={`nav-item canvas-nav-item ${activeView === 'canvas' ? 'active' : ''}`} onClick={() => onChangeView('canvas')}><PenTool size={17} /><span>{t('Canvas')}</span></button>
-        <button className={`nav-item ${activeView === 'roadmap' ? 'active' : ''}`} onClick={() => onChangeView('roadmap')}><ChartNoAxesGantt size={17} /><span>{t('Roadmap')}</span></button>
-        <button className={`nav-item ${activeView === 'files' ? 'active' : ''}`} onClick={() => onChangeView('files')}><Paperclip size={17} /><span>{t('Files')}</span><em>{Object.keys(document.resources.attachments).length}</em></button>
+        <button className={`nav-item ${activeView === 'board' || activeView === 'list' ? 'active' : ''}`} onClick={() => { onChangeView('board'); onMobileClose?.(); }}><Columns3 size={17} /><span>{t('Project work')}</span></button>
+        <button className={`nav-item ${activeView === 'timeline' ? 'active' : ''}`} onClick={() => { onChangeView('timeline'); onMobileClose?.(); }}><CalendarRange size={17} /><span>{t('Timeline')}</span></button>
+        <button className={`nav-item canvas-nav-item ${activeView === 'canvas' ? 'active' : ''}`} onClick={() => { onChangeView('canvas'); onMobileClose?.(); }}><PenTool size={17} /><span>{t('Canvas')}</span></button>
+        <button className={`nav-item ${activeView === 'roadmap' ? 'active' : ''}`} onClick={() => { onChangeView('roadmap'); onMobileClose?.(); }}><ChartNoAxesGantt size={17} /><span>{t('Roadmap')}</span></button>
+        <button className={`nav-item ${activeView === 'files' ? 'active' : ''}`} onClick={() => { onChangeView('files'); onMobileClose?.(); }}><Paperclip size={17} /><span>{t('Files')}</span><em>{Object.keys(document.resources.attachments).length}</em></button>
       </nav>
 
       <nav className="project-nav" aria-label={t('Projects')}>
@@ -120,7 +135,7 @@ export function Sidebar({
             <div className="project-list-row" key={project.id}>
               <button
                 className={`project-item ${activeProject.id === project.id ? 'active' : ''}`}
-                onClick={() => { onSelectProject(project.id); setProjectMenu(null); }}
+                onClick={() => { onSelectProject(project.id); setProjectMenu(null); onMobileClose?.(); }}
                 onDoubleClick={() => onRenameProject(project.id)}
                 title={t('Double-click to rename')}
               >
@@ -156,6 +171,7 @@ export function Sidebar({
       </nav>
 
       <div className="sidebar-footer">
+        {mobile && <PreferencesControls className="sidebar-preferences" expanded />}
         <div className={`sync-indicator sync-${syncState}`}>
           <span className="sync-dot">{syncState === 'saving' && <span className="sync-pulse" />}</span>
           <div className="sync-copy">
@@ -184,6 +200,7 @@ export function Sidebar({
           <button className="icon-button"><Settings2 size={16} /></button>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }

@@ -26,6 +26,7 @@ type Props = {
   onCreateLocal: (name: string) => Promise<void>;
   onConnectRemote: (url: string, credentials?: GitCredentials) => Promise<void>;
   onChooseLocal: () => Promise<void>;
+  mobile?: boolean;
 };
 
 export function Onboarding({
@@ -35,6 +36,7 @@ export function Onboarding({
   onCreateLocal,
   onConnectRemote,
   onChooseLocal,
+  mobile = false,
 }: Props) {
   const { t } = useI18n();
   const [mode, setMode] = useState<'home' | 'create' | 'remote'>('home');
@@ -170,7 +172,9 @@ export function Onboarding({
               <p className="connect-lead startup-lead">
                 {t(recentWorkspaces.length
                   ? 'Continue where you left off, or open another workspace.'
-                  : 'Create a private local workspace, open one from this device, or clone one from a remote repository.')}
+                  : mobile
+                    ? 'Create a private workspace on this device, import a workspace package, or clone one from a remote repository.'
+                    : 'Create a private local workspace, open one from this device, or clone one from a remote repository.')}
               </p>
 
               {recentWorkspaces.length > 0 && (
@@ -185,11 +189,16 @@ export function Onboarding({
                           </span>
                           <span className="recent-workspace-copy">
                             <strong>{workspace.displayName}</strong>
-                            <small title={workspace.repositoryPath}>{workspace.repositoryPath}</small>
+                            <small title={mobile ? undefined : workspace.repositoryPath}>{mobile ? t('Stored securely on this device') : workspace.repositoryPath}</small>
                           </span>
                           {busy === 'recent' && activeRecentPath === workspace.repositoryPath ? <span className="spinner spinner-dark" /> : <ChevronRight size={16} />}
                         </button>
-                        <button className="recent-remove" title={t('Remove from recent workspaces')} aria-label={t('Remove {{name}} from recent workspaces', { name: workspace.displayName })} onClick={() => void onRemoveRecent(workspace.repositoryPath)}><X size={14} /></button>
+                        <button
+                          className="recent-remove"
+                          title={t(mobile ? 'Remove workspace from this device' : 'Remove from recent workspaces')}
+                          aria-label={t(mobile ? 'Remove {{name}} from this device' : 'Remove {{name}} from recent workspaces', { name: workspace.displayName })}
+                          onClick={() => void onRemoveRecent(workspace.repositoryPath)}
+                        ><X size={14} /></button>
                       </div>
                     ))}
                   </div>
@@ -205,7 +214,7 @@ export function Onboarding({
               <div className="startup-actions">
                 <button onClick={() => void chooseLocal()} disabled={busy !== null}>
                   <span><FolderOpen size={18} /></span>
-                  <div><strong>{t('Open workspace folder')}</strong><small>{t('Find its folder on this device')}</small></div>
+                  <div><strong>{t(mobile ? 'Import workspace package' : 'Open workspace folder')}</strong><small>{t(mobile ? 'Choose a .kanbanos.zip or workspace JSON file' : 'Find its folder on this device')}</small></div>
                   {busy === 'local' ? <span className="spinner spinner-dark" /> : <ChevronRight size={15} />}
                 </button>
                 <button onClick={() => switchMode('remote')} disabled={busy !== null}>
@@ -224,7 +233,9 @@ export function Onboarding({
               <p className="step-label">{t('New local workspace')}</p>
               <h2>{t('Create your workspace')}</h2>
               <p className="connect-lead">
-                {t('Name it first, then choose exactly where its folder should be created. A remote can be added later.')}
+                {t(mobile
+                  ? 'Name it first. Kanbanos will keep it safely on this device, and a remote can be added later.'
+                  : 'Name it first, then choose exactly where its folder should be created. A remote can be added later.')}
               </p>
               <label className="field-label" htmlFor="workspace-name">{t('Workspace name')}</label>
               <div className={`repository-field ${error ? 'field-error' : ''}`}>
@@ -240,7 +251,7 @@ export function Onboarding({
               </div>
               {error && <p className="form-error">{error}</p>}
               <button className="button button-primary button-connect" onClick={() => void createLocal()} disabled={busy !== null}>
-                {busy === 'create' ? <span className="spinner" /> : <>{t('Choose location')} <ArrowRight size={17} /></>}
+                {busy === 'create' ? <span className="spinner" /> : <>{t(mobile ? 'Create workspace' : 'Choose location')} <ArrowRight size={17} /></>}
               </button>
             </>
           )}
@@ -259,6 +270,10 @@ export function Onboarding({
                 <GitBranch size={17} />
                 <input
                   id="repository-url"
+                  type="url"
+                  inputMode="url"
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={url}
                   onChange={(event) => { setUrl(event.target.value); setError(''); }}
                   onKeyDown={(event) => event.key === 'Enter' && void connectRemote()}
@@ -307,7 +322,9 @@ export function Onboarding({
                       />
                     </div>
                   </label>
-                  <p className="private-auth-hint">{t('SSH URLs use your existing SSH key and do not need a token here.')}</p>
+                  <p className="private-auth-hint">{t(mobile
+                    ? 'Mobile sync uses HTTPS. Use a personal access token for private repositories.'
+                    : 'SSH URLs use your existing SSH key and do not need a token here.')}</p>
                 </div>
               )}
               {error && <p className="form-error">{error}</p>}
@@ -319,7 +336,7 @@ export function Onboarding({
 
           <div className="trust-note startup-trust">
             <LockKeyhole size={16} />
-            <span><strong>{t('Your work stays yours.')}</strong> {t('Workspaces live in folders you control.')}</span>
+            <span><strong>{t('Your work stays yours.')}</strong> {t(mobile ? 'Workspaces are stored privately on this device and can be exported at any time.' : 'Workspaces live in folders you control.')}</span>
           </div>
         </div>
       </section>

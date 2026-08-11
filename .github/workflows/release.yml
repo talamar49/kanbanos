@@ -157,6 +157,136 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  package-android:
+    name: Package Android
+    needs: quality
+    runs-on: ubuntu-latest
+    outputs:
+      signing: ${{ steps.android-package.outputs.signing }}
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      KANBANOS_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      KANBANOS_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      KANBANOS_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install Android platform and build tools
+        shell: bash
+        run: sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build and sync Android project
+        run: |
+          npm run build
+          node scripts/sync-mobile-version.mjs
+          npx cap sync android
+
+      - name: Build installable Android package
+        id: android-package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          ./android/gradlew -p android --no-daemon testDebugUnitTest
+          mkdir -p release-mobile
+          if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" && -n "${KANBANOS_ANDROID_KEY_ALIAS:-}" && -n "${KANBANOS_ANDROID_STORE_PASSWORD:-}" && -n "${KANBANOS_ANDROID_KEY_PASSWORD:-}" ]]; then
+            export KANBANOS_ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/kanbanos-release.p12"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KANBANOS_ANDROID_KEYSTORE_FILE"
+            chmod 600 "$KANBANOS_ANDROID_KEYSTORE_FILE"
+            ./android/gradlew -p android --no-daemon assembleRelease
+            SOURCE="android/app/build/outputs/apk/release/app-release.apk"
+            echo "signing=production" >> "$GITHUB_OUTPUT"
+          else
+            echo "Android signing secrets are not configured; publishing the installable debug-signed APK."
+            ./android/gradlew -p android --no-daemon assembleDebug
+            SOURCE="android/app/build/outputs/apk/debug/app-debug.apk"
+            echo "signing=debug" >> "$GITHUB_OUTPUT"
+          fi
+          cp "$SOURCE" "release-mobile/Kanbanos-${VERSION}-Android.apk"
+          (cd release-mobile && sha256sum "Kanbanos-${VERSION}-Android.apk" > "Kanbanos-${VERSION}-Android.apk.sha256")
+
+      - name: Upload Android package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-package
+          path: release-mobile/*
+          if-no-files-found: error
+          retention-days: 14
+
+  package-ios:
+    name: Package iOS simulator
+    needs: quality
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build and sync iOS project
+        run: |
+          npm run build
+          node scripts/sync-mobile-version.mjs
+          npx cap sync ios
+
+      - name: Compile iOS simulator application
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/kanbanos-ios" \
+            CODE_SIGNING_ALLOWED=NO \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+          APP_PATH="$RUNNER_TEMP/kanbanos-ios/Build/Products/Release-iphonesimulator/App.app"
+          test -d "$APP_PATH"
+          lipo -verify_arch arm64 x86_64 "$APP_PATH/App"
+          mkdir -p release-mobile
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "release-mobile/Kanbanos-${VERSION}-iOS-Simulator.zip"
+          (cd release-mobile && shasum -a 256 "Kanbanos-${VERSION}-iOS-Simulator.zip" > "Kanbanos-${VERSION}-iOS-Simulator.zip.sha256")
+
+      - name: Upload iOS package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ios-package
+          path: release-mobile/*
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Publish GitHub release
     needs:
@@ -165,6 +295,8 @@ jobs:
       - package-linux
       - package-macos
       - package-windows
+      - package-android
+      - package-ios
     if: needs.metadata.outputs.release_needed == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -188,15 +320,30 @@ jobs:
           name: windows-package
           path: release-assets
 
+      - name: Download Android package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: android-package
+          path: release-assets
+
+      - name: Download iOS package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ios-package
+          path: release-assets
+
       - name: Create release page and tag
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          ANDROID_SIGNING: ${{ needs.package-android.outputs.signing }}
         shell: bash
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          Automated desktop release from the `main` branch.
+          Automated desktop and mobile release from the `main` branch.
+
+          The Android APK is installable directly and is ${ANDROID_SIGNING}-signed. The iOS download is a universal compiled Simulator app for native QA; device and App Store distribution additionally require Apple signing credentials.
 
           See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${RELEASE_TAG}/CHANGELOG.md) for release details.
           EOF

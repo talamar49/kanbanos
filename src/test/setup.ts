@@ -13,6 +13,7 @@ beforeEach(() => {
   document.documentElement.dir = '';
   document.documentElement.removeAttribute('data-theme');
   document.documentElement.removeAttribute('style');
+  document.documentElement.classList.remove('compact-layout', 'native-mobile', 'platform-android', 'platform-ios');
   delete window.kanbanos;
 });
 

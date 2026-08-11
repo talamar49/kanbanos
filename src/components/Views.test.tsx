@@ -124,6 +124,36 @@ describe('workspace navigation', () => {
     await user.click(screen.getByRole('button', { name: /Retry sync/ }));
     expect(callbacks.onRetrySync).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps language and theme controls available inside the mobile drawer', async () => {
+    const user = userEvent.setup();
+    const document = featureWorkspace();
+    renderWithPreferences(
+      <Sidebar
+        mobile
+        mobileOpen
+        document={document}
+        activeProject={document.projects[0]}
+        repositoryName="Mobile repo"
+        syncState="synced"
+        syncError=""
+        activeView="board"
+        hasRemote={false}
+        onChangeView={vi.fn()}
+        onSelectProject={vi.fn()}
+        onAddProject={vi.fn()}
+        onRenameProject={vi.fn()}
+        onAddRemote={vi.fn()}
+        onRetrySync={vi.fn()}
+        onRevealRepository={vi.fn()}
+        onDisconnect={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText('Display preferences')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Hebrew' }));
+    expect(window.document.documentElement).toHaveAttribute('dir', 'rtl');
+  });
 });
 
 describe('board and list task management', () => {
@@ -144,6 +174,8 @@ describe('board and list task management', () => {
     );
 
     expect(screen.getByText('Prepare launch')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Move Prepare launch' }));
+    expect(callbacks.onOpenTask).not.toHaveBeenCalled();
     await user.type(screen.getByPlaceholderText('Search this project'), 'missing');
     expect(screen.queryByText('Prepare launch')).not.toBeInTheDocument();
     expect(screen.getByText('0 matching tasks')).toBeInTheDocument();
@@ -232,6 +264,7 @@ describe('timeline, roadmap, canvas, and files', () => {
     const onEditProject = vi.fn();
     const onOpenProject = vi.fn();
     const onOpenTask = vi.fn();
+    const onMoveProject = vi.fn();
     renderWithPreferences(
       <RoadmapView
         document={document}
@@ -243,7 +276,7 @@ describe('timeline, roadmap, canvas, and files', () => {
         onEditProject={onEditProject}
         onOpenProject={onOpenProject}
         onOpenTask={onOpenTask}
-        onMoveProject={vi.fn()}
+        onMoveProject={onMoveProject}
         onReorderHorizons={vi.fn()}
       />,
     );
@@ -260,6 +293,8 @@ describe('timeline, roadmap, canvas, and files', () => {
     expect(onAddTask).toHaveBeenCalledWith(document.projects[0].id, undefined);
     await user.click(within(launchCard).getByRole('button', { name: 'Open' }));
     expect(onOpenProject).toHaveBeenCalledWith(document.projects[0].id);
+    await user.selectOptions(within(launchCard).getByLabelText('Planning horizon'), 'Next');
+    expect(onMoveProject).toHaveBeenCalledWith(document.projects[0].id, expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/));
   });
 
   it('creates notes and places existing tasks and files on the canvas', async () => {
@@ -334,5 +369,29 @@ describe('timeline, roadmap, canvas, and files', () => {
 
     await user.type(screen.getByPlaceholderText('Search files and tasks'), 'missing');
     expect(screen.getByText('No matching files')).toBeInTheDocument();
+  });
+
+  it('offers one clear share action instead of desktop folder actions on mobile', async () => {
+    const user = userEvent.setup();
+    const document = featureWorkspace();
+    const file = Object.values(document.resources.attachments)[0];
+    const onOpenAttachment = vi.fn();
+    renderWithPreferences(
+      <FilesView
+        mobile
+        document={document}
+        saveState="idle"
+        dirty={false}
+        onSave={vi.fn()}
+        onOpenTask={vi.fn()}
+        onPreviewAttachment={vi.fn()}
+        onOpenAttachment={onOpenAttachment}
+        onRevealAttachment={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: `Share ${file.name}` }));
+    expect(onOpenAttachment).toHaveBeenCalledWith(file);
+    expect(screen.queryByRole('button', { name: `Show ${file.name} in workspace folder` })).not.toBeInTheDocument();
   });
 });

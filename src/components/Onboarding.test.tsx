@@ -15,6 +15,30 @@ function callbacks() {
 }
 
 describe('workspace onboarding', () => {
+  it('presents device storage, package import, and HTTPS guidance on mobile', async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    renderWithPreferences(
+      <Onboarding
+        mobile
+        recentWorkspaces={[{ repositoryPath: '/workspaces/internal-id', displayName: 'Pocket workspace' }]}
+        {...handlers}
+      />,
+    );
+
+    expect(screen.getByText('Stored securely on this device')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Remove Pocket workspace from this device' }));
+    expect(handlers.onRemoveRecent).toHaveBeenCalledWith('/workspaces/internal-id');
+    await user.click(screen.getByRole('button', { name: /Import workspace package/ }));
+    expect(handlers.onChooseLocal).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('button', { name: 'Create a new workspace' }));
+    expect(screen.getByText(/keep it safely on this device/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Workspace name'), 'Mobile work');
+    await user.click(screen.getByRole('button', { name: 'Create workspace' }));
+    expect(handlers.onCreateLocal).toHaveBeenCalledWith('Mobile work');
+  });
+
   it('opens and removes recent workspaces and can choose an existing local repository', async () => {
     const user = userEvent.setup();
     const handlers = callbacks();
@@ -57,6 +81,7 @@ describe('workspace onboarding', () => {
     const { unmount } = renderWithPreferences(<Onboarding recentWorkspaces={[]} {...publicHandlers} />);
 
     await user.click(screen.getByRole('button', { name: /Clone remote workspace/ }));
+    expect(screen.getByLabelText('Git repository URL')).toHaveAttribute('inputmode', 'url');
     await user.type(screen.getByLabelText('Git repository URL'), ' https://example.com/team/work.git ');
     await user.click(screen.getByRole('button', { name: /Clone workspace/ }));
     await waitFor(() => expect(publicHandlers.onConnectRemote).toHaveBeenCalledWith('https://example.com/team/work.git', undefined));

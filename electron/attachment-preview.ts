@@ -47,6 +47,7 @@ const MIME_TYPES: Record<string, { type: 'image' | 'pdf' | 'video' | 'audio'; mi
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_OFFICE_BYTES = 75 * 1024 * 1024;
 const MAX_FOLDER_ENTRIES = 500;
+const EMPTY_FOLDER_MARKER = '.kanbanos-folder';
 
 function decodeXml(value: string): string {
   return value
@@ -157,6 +158,7 @@ async function previewFolder(absolutePath: string, relativePath: string, name: s
   const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
     const children = await fs.readdir(directory, { withFileTypes: true });
     for (const child of children.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (directory === absolutePath && children.length === 1 && child.name === EMPTY_FOLDER_MARKER) continue;
       if (entries.length >= MAX_FOLDER_ENTRIES) return;
       const absoluteChild = path.join(directory, child.name);
       const childStats = await fs.lstat(absoluteChild);
