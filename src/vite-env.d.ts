@@ -17,6 +17,8 @@ type GitConflict = {
   path: string;
   localContent: string;
   remoteContent: string;
+  contentOmitted?: boolean;
+  contentTruncated?: boolean;
 };
 
 type SaveResult = {

@@ -139,6 +139,22 @@ describe('Git workspace persistence', () => {
     await expect(fs.access(resolved)).rejects.toThrow();
   });
 
+  it.skipIf(process.platform === 'win32')('rejects attachment paths that escape through repository symlinks', async () => {
+    const service = new GitWorkspaceService();
+    const connection = await service.createLocal('Symlink containment');
+    const attachmentRoot = path.join(connection.repositoryPath, '.kanbanos', 'content', 'attachments');
+    const attachmentDirectory = path.join(attachmentRoot, '10000000-0000-4000-8000-000000000001');
+    const outsideDirectory = path.join(temporaryDirectory, 'outside-secrets');
+    await fs.mkdir(attachmentDirectory, { recursive: true });
+    await fs.mkdir(outsideDirectory);
+    await fs.writeFile(path.join(outsideDirectory, 'secret.txt'), 'must not be exposed');
+    await fs.symlink(outsideDirectory, path.join(attachmentDirectory, 'escaped'));
+
+    await expect(service.resolveAttachmentPath(
+      '.kanbanos/content/attachments/10000000-0000-4000-8000-000000000001/escaped/secret.txt',
+    )).rejects.toThrow('outside the workspace attachment store');
+  });
+
   it('syncs local commits to a remote and clones them into another workspace', async () => {
     const remote = await createBareRemote();
     const publisher = new GitWorkspaceService();
@@ -187,6 +203,11 @@ describe('Git workspace persistence', () => {
     await expect(fs.readFile(path.join(connection.repositoryPath, '.kanbanos', 'credentials.json'), 'utf8')).resolves.not.toContain('top-secret-token');
     expect(await git(connection.repositoryPath, 'remote', 'get-url', 'origin')).toBe(remote);
     await expect(exec('git', ['show', 'HEAD:.kanbanos/credentials.json'], { cwd: connection.repositoryPath })).rejects.toThrow();
+
+    const publicRemote = await createBareRemote('public-files.git');
+    const changed = await service.addRemote(publicRemote);
+    expect(changed).toMatchObject({ remoteUrl: publicRemote, privateRemote: false, hasStoredCredentials: false });
+    await expect(fs.access(path.join(connection.repositoryPath, '.kanbanos', 'credentials.json'))).rejects.toThrow();
   });
 
   it('commits modifications and deletions for nested workspace content', async () => {
@@ -241,7 +262,17 @@ describe('Git workspace persistence', () => {
     await fs.writeFile(secondOnly, 'from second');
     expect((await firstDevice.saveWorkspace(document)).status).toBe('synced');
 
-    const merged = await secondDevice.saveWorkspace(document);
+    const originalHome = process.env.HOME;
+    const isolatedHome = path.join(temporaryDirectory, 'git-without-global-identity');
+    await fs.mkdir(isolatedHome);
+    process.env.HOME = isolatedHome;
+    let merged;
+    try {
+      merged = await secondDevice.saveWorkspace(document);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+    }
     expect(merged.status).toBe('synced');
     await expect(fs.readFile(path.join(secondConnection.repositoryPath, '.kanbanos', 'content', 'first-device.txt'), 'utf8')).resolves.toBe('from first');
     await expect(fs.readFile(secondOnly, 'utf8')).resolves.toBe('from second');
@@ -296,6 +327,10 @@ describe('Git workspace persistence', () => {
     const conflict = await secondDevice.saveWorkspace(secondEdit);
     expect(conflict.status).toBe('conflict');
     expect(conflict.conflicts).toHaveLength(2);
+    expect(conflict.conflicts?.map((value) => value.path)).toEqual([
+      '.kanbanos/workspace.json',
+      imported.relativePath,
+    ]);
     expect(conflict.conflicts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         path: '.kanbanos/workspace.json',
@@ -304,8 +339,9 @@ describe('Git workspace persistence', () => {
       }),
       expect.objectContaining({
         path: imported.relativePath,
-        localContent: 'attachment from second device',
-        remoteContent: 'attachment from first device',
+        localContent: '',
+        remoteContent: '',
+        contentOmitted: true,
       }),
     ]));
     expect((await git(secondConnection.repositoryPath, 'diff', '--name-only', '--diff-filter=U')).split('\n')).toEqual(expect.arrayContaining([
@@ -322,6 +358,32 @@ describe('Git workspace persistence', () => {
     await expect(fs.readFile(secondAttachmentPath, 'utf8')).resolves.toBe('attachment from first device');
     expect(await git(secondConnection.repositoryPath, 'diff', '--name-only', '--diff-filter=U')).toBe('');
     expect(await git(secondConnection.repositoryPath, 'status', '--short', '--', '.kanbanos')).toBe('');
+  });
+
+  it('caps oversized workspace conflict previews before returning them over IPC', async () => {
+    const remote = await createBareRemote('large-conflict.git');
+    const firstDevice = new GitWorkspaceService();
+    await firstDevice.createLocal('Large conflict first');
+    await firstDevice.addRemote(remote);
+    const initial = { schemaVersion: 1, workspace: { name: 'Initial', notes: 'base' }, projects: [], items: {} };
+    expect((await firstDevice.saveWorkspace(initial)).status).toBe('synced');
+
+    const secondDevice = new GitWorkspaceService();
+    await secondDevice.connectRemote(remote);
+    const firstEdit = { ...initial, workspace: { name: 'First large edit', notes: 'a'.repeat(1_200_000) } };
+    const secondEdit = { ...initial, workspace: { name: 'Second large edit', notes: 'b'.repeat(1_200_000) } };
+    expect((await firstDevice.saveWorkspace(firstEdit)).status).toBe('synced');
+
+    const conflict = await secondDevice.saveWorkspace(secondEdit);
+    expect(conflict.status).toBe('conflict');
+    expect(conflict.conflicts).toEqual([
+      expect.objectContaining({
+        path: '.kanbanos/workspace.json',
+        contentTruncated: true,
+      }),
+    ]);
+    expect(conflict.conflicts![0].localContent.length).toBeLessThanOrEqual(1024 * 1024);
+    expect(conflict.conflicts![0].remoteContent.length).toBeLessThanOrEqual(1024 * 1024);
   });
 
   it.each([

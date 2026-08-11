@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/Task_manager-board%20%7C%20list%20%7C%20canvas%20%7C%20timeline-6c5ce7" alt="Task manager" />
   <img src="https://img.shields.io/badge/Git-local--first-F05032?logo=git&logoColor=white" alt="Local-first Git" />
   <img src="https://img.shields.io/badge/Electron-desktop-47848f?logo=electron&logoColor=white" alt="Electron desktop app" />
-  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-59636e" alt="Windows and Linux" />
+  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-59636e" alt="Windows, macOS, and Linux" />
   <a href="https://github.com/talamar49/kanbanos/actions/workflows/release.yml"><img src="https://github.com/talamar49/kanbanos/actions/workflows/release.yml/badge.svg?branch=main" alt="Build and release status" /></a>
   <a href="https://github.com/talamar49/kanbanos/releases/latest"><img src="https://img.shields.io/github/v/release/talamar49/kanbanos?display_name=tag" alt="Latest GitHub release" /></a>
 </p>
@@ -29,7 +29,7 @@ Your tasks are not locked inside a hosted service. Every workspace lives in a fo
 | **Now / Next / Later roadmap** | Group projects into planning horizons, reorder initiatives, track progress, and see upcoming work. |
 | **Files with task context** | Find every workspace attachment, see which task it belongs to, and preview common document, media, text, Markdown, and modern Office formats in the app. |
 | **Fast daily workflow** | Capture tasks from every planning view, search across work, filter by priority, and keep flow under control with WIP limits. |
-| **Personal desktop experience** | Work on Windows or Linux in English or Hebrew RTL, with light and soft-dark themes. |
+| **Personal desktop experience** | Work on Windows, macOS, or Linux in English or Hebrew RTL, with light and soft-dark themes. |
 
 ## App screens
 
@@ -138,10 +138,11 @@ The Vite renderer opens inside Electron. A browser-only preview is also availabl
 ```bash
 npm run build       # type-check and production build
 npm run dist:win    # Windows NSIS installer
+npm run dist:mac    # universal macOS DMG (Intel and Apple silicon)
 npm run dist:linux  # Linux AppImage and deb
 ```
 
-Cross-compiling Windows installers from Linux may require Wine. Native platform builds are recommended for release artifacts. Every versioned push to `main` is built natively for Windows and Linux by GitHub Actions and published on the [Releases page](https://github.com/talamar49/kanbanos/releases).
+Cross-compiling Windows installers from Linux may require Wine, while macOS disk images must be created on macOS. Native platform builds are recommended for release artifacts. Every versioned push to `main` is built natively for Windows, macOS, and Linux by GitHub Actions and published on the [Releases page](https://github.com/talamar49/kanbanos/releases).
 
 ## Workspace storage
 

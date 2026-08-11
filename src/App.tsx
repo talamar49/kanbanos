@@ -63,13 +63,39 @@ export default function App() {
   const loadWorkspace = useCallback(async (nextConnection: RepositoryConnection) => {
     setConnection(nextConnection);
     setSyncError('');
+    setConflicts(null);
     setActiveView('board');
     const stored = window.kanbanos ? await window.kanbanos.workspace.load() : null;
     revisionRef.current = 0;
     if (isWorkspaceDocument(stored)) {
-      setDocument(normalizeWorkspaceDocument(stored));
+      let loadedDocument = normalizeWorkspaceDocument(stored);
+      let loadedSaveState: SaveState = 'synced';
+      let loadedSyncError = '';
+      if (window.kanbanos && nextConnection.remoteUrl) {
+        try {
+          const result = await window.kanbanos.workspace.save(loadedDocument);
+          if (result.status === 'conflict') {
+            setConflicts(result.conflicts ?? []);
+            loadedSaveState = 'error';
+            loadedSyncError = result.message;
+          } else {
+            if (isWorkspaceDocument(result.document)) loadedDocument = normalizeWorkspaceDocument(result.document);
+            loadedSaveState = result.status === 'synced'
+              ? 'synced'
+              : result.status === 'local-only'
+                ? 'local'
+                : 'error';
+            loadedSyncError = result.status === 'error' ? result.message : '';
+          }
+        } catch (error) {
+          loadedSaveState = 'error';
+          loadedSyncError = error instanceof Error ? error.message : 'Git sync failed. Check the remote and try again.';
+        }
+      }
+      setDocument(loadedDocument);
       setDirty(false);
-      setSaveState('synced');
+      setSaveState(loadedSaveState);
+      setSyncError(loadedSyncError);
     } else {
       setDocument(createEmptyWorkspace(nextConnection.displayName, {
         projectName: t('My first project'),

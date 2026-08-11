@@ -126,11 +126,19 @@ describe('remote and conflict workflows', () => {
     const onResolve = vi.fn().mockResolvedValue(undefined);
     renderWithPreferences(
       <ConflictDialog
-        conflicts={[{
-          path: '.kanbanos/workspace.json',
-          localContent: JSON.stringify({ projects: [{ id: 1 }], items: { one: {}, two: {} }, workspace: { updatedAt: '2027-01-01T10:00:00.000Z' } }),
-          remoteContent: JSON.stringify({ projects: [{ id: 1 }, { id: 2 }], items: { one: {} }, workspace: { updatedAt: '2027-01-02T10:00:00.000Z' } }),
-        }]}
+        conflicts={[
+          {
+            path: '.kanbanos/content/attachments/file/brief.pdf',
+            localContent: '',
+            remoteContent: '',
+            contentOmitted: true,
+          },
+          {
+            path: '.kanbanos/workspace.json',
+            localContent: JSON.stringify({ projects: [{ id: 1 }], items: { one: {}, two: {} }, workspace: { updatedAt: '2027-01-01T10:00:00.000Z' } }),
+            remoteContent: JSON.stringify({ projects: [{ id: 1 }, { id: 2 }], items: { one: {} }, workspace: { updatedAt: '2027-01-02T10:00:00.000Z' } }),
+          },
+        ]}
         onResolve={onResolve}
         onClose={vi.fn()}
       />,

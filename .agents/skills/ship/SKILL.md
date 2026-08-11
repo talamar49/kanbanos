@@ -1,13 +1,13 @@
 ---
 name: ship
-description: Ship all current Kanbanos repository work in a tested GitHub release. Use when the user asks to ship, publish, cut, or release a version. It safely commits and pushes current work to main, bumps the version in a separate commit, then verifies the GitHub Actions build and GitHub Release with Windows, AppImage, and Debian downloads.
+description: Ship all current Kanbanos repository work in a tested GitHub release. Use when the user asks to ship, publish, cut, or release a version. It safely commits and pushes current work to main, bumps the version in a separate commit, then verifies the GitHub Actions build and GitHub Release with Windows, macOS, AppImage, and Debian downloads.
 ---
 
 # Ship a Kanbanos release
 
 Use this workflow only for this repository. A successful release is a green
 `Build and release` workflow on `main`, a Git tag of `v<package-version>`, and a
-GitHub Release page containing all three desktop packages.
+GitHub Release page containing all four desktop packages.
 
 ## Inputs
 
@@ -63,8 +63,8 @@ ruby -e "require 'yaml'; YAML.load_file('.github/workflows/release.yml')"
 ```
 
 Confirm `.github/workflows/release.yml` runs on pushes to `main`, runs test/build,
-packages on native Linux and Windows runners, uploads `.AppImage`, `.deb`, and `.exe`
-files, and grants `contents: write` only to the release job. Confirm `main` is
+packages on native Linux, macOS, and Windows runners, uploads `.AppImage`, `.deb`,
+`.dmg`, and `.exe` files, and grants `contents: write` only to the release job. Confirm `main` is
 protected, only `talamar49` currently has collaborator push access, force pushes and
 deletions are disabled, and non-admin changes require a pull request.
 
@@ -176,6 +176,8 @@ Verify all of the following:
 - Its tag is `v<version>` and resolves to `RELEASE_SHA`.
 - Its assets include exactly one Windows installer matching
   `Kanbanos-<version>-Windows.exe`.
+- Its assets include exactly one universal macOS disk image matching
+  `Kanbanos-<version>-macOS-universal.dmg`.
 - Its assets include exactly one Linux AppImage matching
   `Kanbanos-<version>-Linux.AppImage`.
 - Its assets include exactly one Debian package matching
@@ -195,5 +197,5 @@ https://github.com/talamar49/kanbanos/actions
 https://github.com/talamar49/kanbanos/releases/tag/v<version>
 ```
 
-Do not claim the release succeeded until the workflow, tag target, page, and all three
+Do not claim the release succeeded until the workflow, tag target, page, and all four
 assets have been verified through GitHub.

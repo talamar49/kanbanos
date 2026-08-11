@@ -49,7 +49,9 @@ function VersionCard({ type, summary }: { type: 'local' | 'remote'; summary: Sum
 export function ConflictDialog({ conflicts, onResolve, onClose }: Props) {
   const { t } = useI18n();
   const [busy, setBusy] = useState<'local' | 'remote' | null>(null);
-  const conflict = conflicts[0];
+  const conflict = conflicts.find((value) => value.path === '.kanbanos/workspace.json')
+    ?? conflicts.find((value) => !value.contentOmitted)
+    ?? conflicts[0];
   const localSummary = useMemo(() => summarize(conflict?.localContent ?? ''), [conflict]);
   const remoteSummary = useMemo(() => summarize(conflict?.remoteContent ?? ''), [conflict]);
 

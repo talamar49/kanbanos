@@ -15,8 +15,15 @@ const CREDENTIALS_IGNORE_ENTRY = '/credentials.json';
 const LOCAL_CREDENTIALS_IGNORE_ENTRY = `/${CREDENTIALS_FILE}`;
 const SAFE_CREDENTIAL_PREFIX = 'safe:';
 const LOCAL_CREDENTIAL_PREFIX = 'local:';
+const MAX_CONFLICT_PREVIEW_BYTES = 1024 * 1024;
+const GIT_IDENTITY_ARGS = [
+  '-c',
+  'user.name=Kanbanos',
+  '-c',
+  'user.email=workspace@kanbanos.app',
+] as const;
 
-type GitResult = { stdout: string; stderr: string; code: number };
+type GitResult = { stdout: string; stderr: string; code: number; outputTruncated: boolean };
 
 export type GitCredentials = {
   username: string;
@@ -47,6 +54,8 @@ export type GitConflict = {
   path: string;
   localContent: string;
   remoteContent: string;
+  contentOmitted?: boolean;
+  contentTruncated?: boolean;
 };
 
 export type SaveResult = {
@@ -74,6 +83,7 @@ function runGit(
   args: string[],
   allowFailure = false,
   credentials?: GitCredentials,
+  maxOutputBytes = Number.POSITIVE_INFINITY,
 ): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     const env: NodeJS.ProcessEnv = {
@@ -101,11 +111,24 @@ function runGit(
 
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => (stdout += chunk.toString()));
-    child.stderr.on('data', (chunk) => (stderr += chunk.toString()));
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let outputTruncated = false;
+    child.stdout.on('data', (chunk: Buffer) => {
+      const remaining = Math.max(0, maxOutputBytes - stdoutBytes);
+      if (remaining > 0) stdout += chunk.subarray(0, remaining).toString();
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxOutputBytes) outputTruncated = true;
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      const remaining = Math.max(0, maxOutputBytes - stderrBytes);
+      if (remaining > 0) stderr += chunk.subarray(0, remaining).toString();
+      stderrBytes += chunk.length;
+      if (stderrBytes > maxOutputBytes) outputTruncated = true;
+    });
     child.on('error', reject);
     child.on('close', (code) => {
-      const result = { stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 1 };
+      const result = { stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 1, outputTruncated };
       if (result.code !== 0 && !allowFailure) {
         reject(new Error(result.stderr || result.stdout || `Git exited with code ${result.code}`));
       } else {
@@ -414,7 +437,7 @@ export class GitWorkspaceService {
     return this.remember({
       ...repository,
       remoteUrl: url,
-      privateRemote: clearCredentials ? false : Boolean(repository.privateRemote || credentials),
+      privateRemote: clearCredentials ? false : Boolean(credentials),
       hasStoredCredentials: clearCredentials ? false : Boolean(credentials),
     });
   }
@@ -502,16 +525,7 @@ export class GitWorkspaceService {
       if (remoteBranch) {
         const merged = await runGit(
           cwd,
-          [
-            '-c',
-            'user.name=Kanbanos',
-            '-c',
-            'user.email=workspace@kanbanos.app',
-            'merge',
-            '--no-edit',
-            '--allow-unrelated-histories',
-            `origin/${remoteBranch}`,
-          ],
+          [...GIT_IDENTITY_ARGS, 'merge', '--no-edit', '--allow-unrelated-histories', `origin/${remoteBranch}`],
           true,
         );
         if (merged.code !== 0) {
@@ -648,7 +662,21 @@ export class GitWorkspaceService {
       throw new Error('That attachment path is outside the workspace attachment store.');
     }
     if (!(await exists(target))) throw new Error('That attachment is no longer available.');
-    return target;
+
+    const realRepository = await fs.realpath(repository.repositoryPath);
+    const expectedRoot = path.resolve(realRepository, ATTACHMENTS_DIRECTORY);
+    const [realRoot, realTarget] = await Promise.all([fs.realpath(root), fs.realpath(target)]);
+    const normalizePath = (value: string) => process.platform === 'win32'
+      ? path.resolve(value).toLowerCase()
+      : path.resolve(value);
+    if (normalizePath(realRoot) !== normalizePath(expectedRoot)) {
+      throw new Error('That attachment path is outside the workspace attachment store.');
+    }
+    const relativeTarget = path.relative(realRoot, realTarget);
+    if (!relativeTarget || relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget)) {
+      throw new Error('That attachment path is outside the workspace attachment store.');
+    }
+    return realTarget;
   }
 
   async removeAttachment(attachmentId: string): Promise<void> {
@@ -677,7 +705,7 @@ export class GitWorkspaceService {
     return {
       ...connection,
       remoteUrl: prepared.url,
-      privateRemote: Boolean(connection.privateRemote || credentials || privateRemote),
+      privateRemote: Boolean(credentials || privateRemote),
       hasStoredCredentials: Boolean(credentials),
     };
   }
@@ -905,13 +933,7 @@ export class GitWorkspaceService {
   }
 
   private async commit(cwd: string, message: string, files?: string[]): Promise<void> {
-    const args = [
-      '-c',
-      'user.name=Kanbanos',
-      '-c',
-      'user.email=workspace@kanbanos.app',
-      'commit',
-    ];
+    const args = [...GIT_IDENTITY_ARGS, 'commit'];
     if (files?.length) args.push('--only');
     args.push('-m', message);
     if (files?.length) args.push('--', ...files);
@@ -965,14 +987,25 @@ export class GitWorkspaceService {
   }
 
   private async describeConflicts(cwd: string, files: string[]): Promise<GitConflict[]> {
-    return Promise.all(
-      files.map(async (file) => {
-        const [local, remote] = await Promise.all([
-          runGit(cwd, ['show', `:2:${file}`], true),
-          runGit(cwd, ['show', `:3:${file}`], true),
-        ]);
-        return { path: file, localContent: local.stdout, remoteContent: remote.stdout };
-      }),
-    );
+    const orderedFiles = [...files].sort((left, right) => {
+      if (left === WORKSPACE_FILE) return -1;
+      if (right === WORKSPACE_FILE) return 1;
+      return left.localeCompare(right);
+    });
+    return Promise.all(orderedFiles.map(async (file) => {
+      if (file !== WORKSPACE_FILE) {
+        return { path: file, localContent: '', remoteContent: '', contentOmitted: true };
+      }
+      const [local, remote] = await Promise.all([
+        runGit(cwd, ['show', `:2:${file}`], true, undefined, MAX_CONFLICT_PREVIEW_BYTES),
+        runGit(cwd, ['show', `:3:${file}`], true, undefined, MAX_CONFLICT_PREVIEW_BYTES),
+      ]);
+      return {
+        path: file,
+        localContent: local.stdout,
+        remoteContent: remote.stdout,
+        contentTruncated: local.outputTruncated || remote.outputTruncated || undefined,
+      };
+    }));
   }
 }

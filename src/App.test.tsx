@@ -8,10 +8,11 @@ import { PreferencesProvider } from './i18n';
 function desktopApi(options: {
   stored?: unknown;
   recent?: RepositoryConnection[];
+  connection?: RepositoryConnection;
   saveResult?: SaveResult;
   attachments?: ImportedAttachment[];
 } = {}) {
-  const connection: RepositoryConnection = { repositoryPath: '/work/demo', displayName: 'Demo workspace' };
+  const connection: RepositoryConnection = options.connection ?? { repositoryPath: '/work/demo', displayName: 'Demo workspace' };
   const api = {
     appearance: { setTheme: vi.fn() },
     repository: {
@@ -122,6 +123,44 @@ describe('Kanbanos app integration', () => {
     expect(api.attachments.open).toHaveBeenCalledWith(imported.relativePath);
     await user.click(screen.getByRole('button', { name: 'Show brief.pdf in workspace folder' }));
     expect(api.attachments.reveal).toHaveBeenCalledWith(imported.relativePath);
+  });
+
+  it('synchronizes a remote workspace before marking the loaded document as current', async () => {
+    const user = userEvent.setup();
+    const stored = createEmptyWorkspace('Stale local workspace');
+    const projectId = stored.projects[0].id;
+    const remoteDocument = createEmptyWorkspace('Current remote workspace');
+    remoteDocument.projects[0] = { ...stored.projects[0] };
+    remoteDocument.preferences.activeProjectId = projectId;
+    remoteDocument.modules.kanban.projects = { [projectId]: stored.modules.kanban.projects[projectId] };
+    remoteDocument.modules.canvas.projects = { [projectId]: stored.modules.canvas.projects[projectId] };
+    const remoteTask = createWorkItem(projectId, 'planned', 'Task fetched from remote', 1000);
+    remoteDocument.items[remoteTask.id] = remoteTask;
+    const connection = {
+      repositoryPath: '/work/remote',
+      displayName: 'Remote workspace',
+      remoteUrl: 'https://example.com/workspace.git',
+    };
+    const { api } = desktopApi({
+      stored,
+      connection,
+      recent: [connection],
+      saveResult: {
+        status: 'synced',
+        message: 'Everything is saved and in sync.',
+        document: remoteDocument,
+      },
+    });
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click((await screen.findByText('Remote workspace')).closest('.recent-workspace-main')!);
+
+    await waitFor(() => expect(api.workspace.save).toHaveBeenCalledWith(expect.objectContaining({
+      workspace: expect.objectContaining({ name: 'Stale local workspace' }),
+    })));
+    expect(await screen.findByText('Task fetched from remote')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Saved' })).toBeDisabled();
   });
 
   it('shows save conflicts and resolves the chosen workspace version', async () => {
