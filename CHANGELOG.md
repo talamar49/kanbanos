@@ -4,6 +4,25 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-11
+
+### Added
+
+- A freeform Canvas workspace for arranging notes, tasks, and files into visual plans and connected diagrams.
+- Broad automated coverage for workspace persistence, Git synchronization, attachment previews, localization, onboarding, views, and core desktop workflows.
+- Complete Canvas QA captures alongside refreshed English and Hebrew light/dark screenshots.
+
+### Improved
+
+- Git synchronization of managed workspace content, including disjoint edits, simultaneous file conflicts, and modify/delete conflict resolution.
+- Remote workspace startup synchronization, credential reset behavior, attachment path containment, and bounded conflict previews.
+- Planning and task workflows across Board, Timeline, Roadmap, attachments, dependencies, and repository onboarding.
+
+### Delivery
+
+- Migrated CI/CD from GitLab to GitHub Actions with native Windows and Linux packaging on every push to `main`.
+- Added automatic GitHub Release pages with Windows installer, universal macOS disk image, Linux AppImage, and Debian package downloads.
+
 ## [0.1.1] - 2026-08-11
 
 ### Added
