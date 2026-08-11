@@ -6,6 +6,11 @@ type RepositoryConnection = {
   displayName: string;
 };
 
+type GitCredentials = {
+  username: string;
+  token: string;
+};
+
 type GitConflict = {
   path: string;
   localContent: string;
@@ -20,19 +25,56 @@ type SaveResult = {
   document?: unknown;
 };
 
+type ImportedAttachment = {
+  id: string;
+  name: string;
+  kind: 'file' | 'folder';
+  relativePath: string;
+  sizeBytes: number;
+  fileCount: number;
+  createdAt: string;
+};
+
+type AttachmentPreviewEntry = {
+  name: string;
+  relativePath: string;
+  kind: 'file' | 'folder';
+  sizeBytes: number;
+};
+
+type AttachmentPreview =
+  | { type: 'image' | 'pdf' | 'video' | 'audio'; name: string; mimeType: string; url: string }
+  | { type: 'text' | 'markdown'; name: string; content: string; truncated: boolean }
+  | { type: 'word'; name: string; paragraphs: string[]; truncated: boolean }
+  | { type: 'presentation'; name: string; slides: Array<{ title: string; lines: string[] }>; truncated: boolean }
+  | { type: 'spreadsheet'; name: string; sheets: Array<{ name: string; rows: string[][] }>; truncated: boolean }
+  | { type: 'folder'; name: string; entries: AttachmentPreviewEntry[]; truncated: boolean }
+  | { type: 'unsupported'; name: string; extension: string };
+
 interface Window {
   kanbanos?: {
+    appearance: {
+      setTheme: (theme: 'light' | 'dark') => void;
+    };
     repository: {
       status: () => Promise<RepositoryConnection | null>;
       listRecent: () => Promise<RepositoryConnection[]>;
       openRecent: (repositoryPath: string) => Promise<RepositoryConnection>;
       removeRecent: (repositoryPath: string) => Promise<void>;
-      createLocal: (displayName: string) => Promise<RepositoryConnection | null>;
-      connectRemote: (remoteUrl: string) => Promise<RepositoryConnection>;
-      chooseLocal: () => Promise<RepositoryConnection | null>;
-      addRemote: (remoteUrl: string) => Promise<RepositoryConnection>;
+      createLocal: (displayName: string, language?: 'en' | 'he') => Promise<RepositoryConnection | null>;
+      connectRemote: (remoteUrl: string, credentials?: GitCredentials) => Promise<RepositoryConnection>;
+      chooseLocal: (language?: 'en' | 'he') => Promise<RepositoryConnection | null>;
+      addRemote: (remoteUrl: string, credentials?: GitCredentials) => Promise<RepositoryConnection>;
       disconnect: () => Promise<void>;
       reveal: () => Promise<void>;
+    };
+    attachments: {
+      pickFiles: (language?: 'en' | 'he') => Promise<ImportedAttachment[]>;
+      pickFolders: (language?: 'en' | 'he') => Promise<ImportedAttachment[]>;
+      open: (relativePath: string) => Promise<void>;
+      reveal: (relativePath: string) => Promise<void>;
+      preview: (relativePath: string) => Promise<AttachmentPreview>;
+      remove: (attachmentId: string) => Promise<void>;
     };
     workspace: {
       load: () => Promise<unknown | null>;

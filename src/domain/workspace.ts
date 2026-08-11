@@ -33,7 +33,7 @@ export function createWorkItem(
   columnId: string,
   title: string,
   rank: number,
-  options: Partial<Pick<WorkItem, 'description' | 'priority' | 'startDate' | 'dueDate' | 'labels' | 'assignee' | 'subtasks'>> = {},
+  options: Partial<Pick<WorkItem, 'description' | 'priority' | 'estimateMinutes' | 'startDate' | 'dueDate' | 'dependencyIds' | 'labels' | 'assignee' | 'subtasks'>> = {},
 ): WorkItem {
   const timestamp = now();
   return {
@@ -43,8 +43,11 @@ export function createWorkItem(
     title,
     description: options.description ?? '',
     priority: options.priority ?? 'none',
+    estimateMinutes: options.estimateMinutes,
     startDate: options.startDate,
     dueDate: options.dueDate,
+    dependencyIds: options.dependencyIds ?? [],
+    attachmentIds: [],
     labels: options.labels ?? [],
     assignee: options.assignee,
     subtasks: options.subtasks ?? [],
@@ -60,8 +63,15 @@ function dateAfter(days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-export function createEmptyWorkspace(workspaceName = 'My workspace'): WorkspaceDocument {
-  const project = createProject('My first project', '#6c5ce7', 'A focused space for what matters next');
+export function createEmptyWorkspace(
+  workspaceName = 'My workspace',
+  copy: { projectName?: string; projectDescription?: string } = {},
+): WorkspaceDocument {
+  const project = createProject(
+    copy.projectName ?? 'My first project',
+    '#6c5ce7',
+    copy.projectDescription ?? 'A focused space for what matters next',
+  );
   const timestamp = now();
   return {
     schemaVersion: 1,
@@ -79,6 +89,7 @@ export function createEmptyWorkspace(workspaceName = 'My workspace'): WorkspaceD
         projects: { [project.id]: createProjectSettings() },
       },
     },
+    resources: { attachments: {} },
     preferences: { activeProjectId: project.id },
   };
 }
@@ -185,6 +196,7 @@ export function createDefaultWorkspace(workspaceName = 'My workspace'): Workspac
         projects: Object.fromEntries(projects.map((project) => [project.id, createProjectSettings()])),
       },
     },
+    resources: { attachments: {} },
     preferences: { activeProjectId: product.id },
   };
 }
@@ -208,6 +220,7 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
       typeof item.title === 'string' &&
       Array.isArray(item.labels) &&
       Array.isArray(item.subtasks) &&
+      (item.attachmentIds === undefined || Array.isArray(item.attachmentIds)) &&
       typeof item.moduleData?.kanban?.columnId === 'string' &&
       typeof item.moduleData?.kanban?.rank === 'number',
     );
@@ -219,6 +232,22 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
         typeof column.id === 'string' && typeof column.title === 'string',
       ),
     );
+  const attachments = candidate.resources?.attachments;
+  const attachmentsValid = attachments === undefined || (
+    Boolean(attachments) &&
+    typeof attachments === 'object' &&
+    !Array.isArray(attachments) &&
+    Object.values(attachments).every((attachment) =>
+      Boolean(attachment) &&
+      typeof attachment.id === 'string' &&
+      typeof attachment.name === 'string' &&
+      (attachment.kind === 'file' || attachment.kind === 'folder') &&
+      typeof attachment.relativePath === 'string' &&
+      typeof attachment.sizeBytes === 'number' &&
+      typeof attachment.fileCount === 'number' &&
+      typeof attachment.createdAt === 'string',
+    )
+  );
 
   return (
     candidate.schemaVersion === 1 &&
@@ -226,8 +255,23 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
     projectsValid &&
     itemsValid &&
     kanbanValid &&
+    attachmentsValid &&
     typeof candidate.preferences?.activeProjectId === 'string'
   );
+}
+
+export function normalizeWorkspaceDocument(document: WorkspaceDocument): WorkspaceDocument {
+  return {
+    ...document,
+    items: Object.fromEntries(Object.entries(document.items).map(([itemId, item]) => [
+      itemId,
+      { ...item, dependencyIds: item.dependencyIds ?? [], attachmentIds: item.attachmentIds ?? [] },
+    ])),
+    resources: {
+      ...(document.resources ?? {}),
+      attachments: document.resources?.attachments ?? {},
+    },
+  };
 }
 
 function touch(document: WorkspaceDocument): WorkspaceDocument {
@@ -241,7 +285,7 @@ export function workspaceReducer(
   document: WorkspaceDocument,
   action: WorkspaceAction,
 ): WorkspaceDocument {
-  if (action.type === 'load') return action.document;
+  if (action.type === 'load') return normalizeWorkspaceDocument(action.document);
 
   if (action.type === 'selectProject') {
     return { ...document, preferences: { ...document.preferences, activeProjectId: action.projectId } };
@@ -290,10 +334,54 @@ export function workspaceReducer(
     });
   }
 
+  if (action.type === 'addAttachments') {
+    const current = document.items[action.itemId];
+    if (!current || action.attachments.length === 0) return document;
+    const attachments = { ...document.resources.attachments };
+    action.attachments.forEach((attachment) => { attachments[attachment.id] = attachment; });
+    return touch({
+      ...document,
+      items: {
+        ...document.items,
+        [current.id]: {
+          ...current,
+          attachmentIds: Array.from(new Set([...(current.attachmentIds ?? []), ...action.attachments.map((attachment) => attachment.id)])),
+          updatedAt: now(),
+        },
+      },
+      resources: { ...document.resources, attachments },
+    });
+  }
+
+  if (action.type === 'removeAttachment') {
+    const attachments = { ...document.resources.attachments };
+    if (!attachments[action.attachmentId]) return document;
+    delete attachments[action.attachmentId];
+    const items = Object.fromEntries(Object.entries(document.items).map(([itemId, item]) => [
+      itemId,
+      item.attachmentIds?.includes(action.attachmentId)
+        ? { ...item, attachmentIds: item.attachmentIds.filter((attachmentId) => attachmentId !== action.attachmentId), updatedAt: now() }
+        : item,
+    ]));
+    return touch({ ...document, items, resources: { ...document.resources, attachments } });
+  }
+
   if (action.type === 'deleteItem') {
+    const deletedAttachmentIds = new Set(document.items[action.itemId]?.attachmentIds ?? []);
     const items = { ...document.items };
     delete items[action.itemId];
-    return touch({ ...document, items });
+    Object.values(items).forEach((item) => {
+      if (item.dependencyIds?.includes(action.itemId)) {
+        items[item.id] = {
+          ...item,
+          dependencyIds: item.dependencyIds.filter((dependencyId) => dependencyId !== action.itemId),
+          updatedAt: now(),
+        };
+      }
+    });
+    const attachments = { ...document.resources.attachments };
+    deletedAttachmentIds.forEach((attachmentId) => delete attachments[attachmentId]);
+    return touch({ ...document, items, resources: { ...document.resources, attachments } });
   }
 
   if (action.type === 'moveItem') {

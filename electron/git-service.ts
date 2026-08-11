@@ -1,14 +1,21 @@
-import { app } from 'electron';
-import { createHash } from 'node:crypto';
+import { app, safeStorage } from 'electron';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 const DATA_DIRECTORY = '.kanbanos';
 const WORKSPACE_FILE = `${DATA_DIRECTORY}/workspace.json`;
+const ATTACHMENTS_DIRECTORY = `${DATA_DIRECTORY}/content/attachments`;
 const SETTINGS_FILE = 'connection.json';
+const CREDENTIALS_FILE = 'credentials.json';
 
 type GitResult = { stdout: string; stderr: string; code: number };
+
+export type GitCredentials = {
+  username: string;
+  token: string;
+};
 
 export type RepositoryConnection = {
   repositoryPath: string;
@@ -20,6 +27,11 @@ type ConnectionSettings = {
   version: 1;
   active: RepositoryConnection | null;
   recent: RepositoryConnection[];
+};
+
+type CredentialSettings = {
+  version: 1;
+  credentials: Record<string, string>;
 };
 
 export type GitConflict = {
@@ -36,15 +48,45 @@ export type SaveResult = {
   document?: unknown;
 };
 
-function runGit(cwd: string, args: string[], allowFailure = false): Promise<GitResult> {
+export type ImportedAttachment = {
+  id: string;
+  name: string;
+  kind: 'file' | 'folder';
+  relativePath: string;
+  sizeBytes: number;
+  fileCount: number;
+  createdAt: string;
+};
+
+type AttachmentStats = Pick<ImportedAttachment, 'kind' | 'sizeBytes' | 'fileCount'>;
+
+function runGit(
+  cwd: string,
+  args: string[],
+  allowFailure = false,
+  credentials?: GitCredentials,
+): Promise<GitResult> {
   return new Promise((resolve, reject) => {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_MERGE_AUTOEDIT: 'no',
+    };
+
+    if (credentials?.token) {
+      const configuredCount = Number.parseInt(env.GIT_CONFIG_COUNT ?? '0', 10);
+      const configIndex = Number.isFinite(configuredCount) ? configuredCount : 0;
+      env.GIT_CONFIG_COUNT = String(configIndex + 1);
+      env[`GIT_CONFIG_KEY_${configIndex}`] = 'http.extraHeader';
+      env[`GIT_CONFIG_VALUE_${configIndex}`] = `Authorization: Basic ${Buffer.from(
+        `${credentials.username}:${credentials.token}`,
+        'utf8',
+      ).toString('base64')}`;
+    }
+
     const child = spawn('git', args, {
       cwd,
-      env: {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: '0',
-        GIT_MERGE_AUTOEDIT: 'no',
-      },
+      env,
       windowsHide: true,
     });
 
@@ -82,6 +124,81 @@ async function readJson(target: string): Promise<unknown | null> {
   }
 }
 
+function attachmentName(value: string): string {
+  const clean = value
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+    .replace(/^\.+$/, '_')
+    .trim()
+    .slice(0, 160);
+  return clean || 'attachment';
+}
+
+async function inspectAttachmentSource(source: string): Promise<AttachmentStats> {
+  const stats = await fs.lstat(source);
+  if (stats.isSymbolicLink()) throw new Error('Symbolic links cannot be attached.');
+  if (stats.isFile()) return { kind: 'file', sizeBytes: stats.size, fileCount: 1 };
+  if (!stats.isDirectory()) throw new Error('Only files and folders can be attached.');
+
+  let sizeBytes = 0;
+  let fileCount = 0;
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const target = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        await visit(target);
+      } else if (entry.isFile()) {
+        const file = await fs.stat(target);
+        sizeBytes += file.size;
+        fileCount += 1;
+      }
+    }
+  };
+  await visit(source);
+  return { kind: 'folder', sizeBytes, fileCount };
+}
+
+function normalizeCredentials(credentials?: GitCredentials): GitCredentials | undefined {
+  const token = credentials?.token.trim();
+  if (!token) return undefined;
+  return {
+    username: credentials?.username.trim() || 'oauth2',
+    token,
+  };
+}
+
+function prepareRemote(
+  remoteUrl: string,
+  suppliedCredentials?: GitCredentials,
+): { url: string; credentials?: GitCredentials } {
+  let url = remoteUrl.trim();
+  let credentials = normalizeCredentials(suppliedCredentials);
+
+  try {
+    const parsed = new URL(url);
+    if (/^https?:$/.test(parsed.protocol) && parsed.password) {
+      if (!credentials) {
+        credentials = normalizeCredentials({
+          username: decodeURIComponent(parsed.username) || 'oauth2',
+          token: decodeURIComponent(parsed.password),
+        });
+      }
+      parsed.username = '';
+      parsed.password = '';
+      url = parsed.toString();
+    }
+  } catch {
+    // SCP-style SSH remotes (git@host:path) are valid without URL parsing.
+  }
+
+  return { url, credentials };
+}
+
+function credentialKey(remoteUrl: string): string {
+  return createHash('sha256').update(remoteUrl).digest('hex');
+}
+
 function repositoryName(value: string): string {
   let source = value.trim();
   try {
@@ -98,10 +215,17 @@ function repositoryName(value: string): string {
   return name || 'Workspace';
 }
 
-function friendlyGitError(error: unknown): string {
+function friendlyGitError(error: unknown, operation: 'read' | 'write' = 'read'): string {
   const value = error instanceof Error ? error.message : String(error);
-  if (/authentication|could not read Username|permission denied/i.test(value)) {
-    return 'Git could not authenticate. Check your repository credentials or SSH key.';
+  if (/authentication|authorization|could not read (Username|Password)|access denied|HTTP 401/i.test(value)) {
+    return 'Git could not authenticate. Check the username, token, or SSH key.';
+  }
+  if (/not allowed to push|write access.*not granted|protected branch|pre-receive hook declined/i.test(value)
+    || (operation === 'write' && /HTTP 403|requested URL returned error: 403/i.test(value))) {
+    return 'The repository was reached, but you do not have permission to push. Use a token with write access and check that the branch is not protected.';
+  }
+  if (/permission denied/i.test(value)) {
+    return 'Git could not authenticate. Check the username, token, or SSH key.';
   }
   if (/not found|does not appear to be a git repository/i.test(value)) {
     return 'That Git repository could not be found or is not accessible.';
@@ -114,33 +238,41 @@ function friendlyGitError(error: unknown): string {
 
 export class GitWorkspaceService {
   private connection: RepositoryConnection | null = null;
+  private sessionCredentials = new Map<string, GitCredentials>();
 
   private get settingsPath(): string {
     return path.join(app.getPath('userData'), SETTINGS_FILE);
+  }
+
+  private get credentialsPath(): string {
+    return path.join(app.getPath('userData'), CREDENTIALS_FILE);
   }
 
   async restoreConnection(): Promise<RepositoryConnection | null> {
     const settings = await this.readSettings();
     const saved = settings.active;
     if (!saved || !(await exists(path.join(saved.repositoryPath, '.git')))) return null;
-    this.connection = saved;
-    return saved;
+    const connection = await this.sanitizeConnection(saved);
+    if (connection.remoteUrl !== saved.remoteUrl) return this.remember(connection);
+    this.connection = connection;
+    return connection;
   }
 
   async listRecentConnections(): Promise<RepositoryConnection[]> {
     const settings = await this.readSettings();
     const available: RepositoryConnection[] = [];
     for (const connection of settings.recent) {
-      if (await exists(path.join(connection.repositoryPath, '.git'))) available.push(connection);
+      if (await exists(path.join(connection.repositoryPath, '.git'))) {
+        available.push(await this.sanitizeConnection(connection));
+      }
     }
-    if (available.length !== settings.recent.length) {
-      await this.writeSettings({
-        ...settings,
-        active: settings.active && available.some((item) => item.repositoryPath === settings.active?.repositoryPath)
-          ? settings.active
-          : null,
-        recent: available,
-      });
+    const active = settings.active
+      ? available.find((item) => item.repositoryPath === settings.active?.repositoryPath) ?? null
+      : null;
+    if (available.length !== settings.recent.length
+      || active?.remoteUrl !== settings.active?.remoteUrl
+      || available.some((item, index) => item.remoteUrl !== settings.recent[index]?.remoteUrl)) {
+      await this.writeSettings({ ...settings, active, recent: available });
     }
     return available;
   }
@@ -151,7 +283,7 @@ export class GitWorkspaceService {
     if (!connection || !(await exists(path.join(repositoryPath, '.git')))) {
       throw new Error('This workspace folder was moved or is no longer available.');
     }
-    return this.remember(connection);
+    return this.remember(await this.sanitizeConnection(connection));
   }
 
   async removeRecentConnection(repositoryPath: string): Promise<void> {
@@ -186,37 +318,59 @@ export class GitWorkspaceService {
     return this.remember({ repositoryPath, displayName: name });
   }
 
-  async connectRemote(remoteUrl: string): Promise<RepositoryConnection> {
-    const url = remoteUrl.trim();
+  async connectRemote(remoteUrl: string, suppliedCredentials?: GitCredentials): Promise<RepositoryConnection> {
+    const prepared = prepareRemote(remoteUrl, suppliedCredentials);
+    const url = prepared.url;
     if (!url) throw new Error('Enter a Git repository URL.');
+    const credentials = prepared.credentials ?? await this.getCredentials(url);
 
     const key = createHash('sha256').update(url).digest('hex').slice(0, 12);
     const root = path.join(app.getPath('userData'), 'repositories');
     const repositoryPath = path.join(root, `${repositoryName(url)}-${key}`);
     await fs.mkdir(root, { recursive: true });
+    const repositoryAlreadyExists = await exists(path.join(repositoryPath, '.git'));
 
-    if (await exists(path.join(repositoryPath, '.git'))) {
-      await runGit(repositoryPath, ['remote', 'set-url', 'origin', url], true);
-      await runGit(repositoryPath, ['fetch', 'origin'], true);
-    } else {
-      if (await exists(repositoryPath)) await fs.rm(repositoryPath, { recursive: true, force: true });
-      await runGit(root, ['clone', '--', url, repositoryPath]);
+    try {
+      if (repositoryAlreadyExists) {
+        await runGit(repositoryPath, ['remote', 'set-url', 'origin', url]);
+        const fetched = await runGit(repositoryPath, ['fetch', 'origin'], true, credentials);
+        if (fetched.code !== 0) throw new Error(fetched.stderr || fetched.stdout);
+      } else {
+        if (await exists(repositoryPath)) await fs.rm(repositoryPath, { recursive: true, force: true });
+        await runGit(root, ['clone', '--', url, repositoryPath], false, credentials);
+      }
+    } catch (error) {
+      if (!repositoryAlreadyExists && await exists(repositoryPath)) {
+        await fs.rm(repositoryPath, { recursive: true, force: true });
+      }
+      throw new Error(friendlyGitError(error));
     }
 
+    if (prepared.credentials) await this.storeCredentials(url, prepared.credentials);
     return this.remember({ repositoryPath, remoteUrl: url, displayName: repositoryName(url) });
   }
 
-  async addRemote(remoteUrl: string): Promise<RepositoryConnection> {
+  async addRemote(remoteUrl: string, suppliedCredentials?: GitCredentials): Promise<RepositoryConnection> {
     const repository = this.requireConnection();
-    const url = remoteUrl.trim();
+    const prepared = prepareRemote(remoteUrl, suppliedCredentials);
+    const url = prepared.url;
     if (!url) throw new Error('Enter a Git repository URL.');
 
-    const current = await runGit(repository.repositoryPath, ['remote', 'get-url', 'origin'], true);
-    if (current.code === 0) {
-      await runGit(repository.repositoryPath, ['remote', 'set-url', 'origin', url]);
-    } else {
-      await runGit(repository.repositoryPath, ['remote', 'add', 'origin', url]);
+    try {
+      const credentials = prepared.credentials ?? await this.getCredentials(url);
+      const reachable = await runGit(repository.repositoryPath, ['ls-remote', '--', url], true, credentials);
+      if (reachable.code !== 0) throw new Error(reachable.stderr || reachable.stdout);
+
+      const current = await runGit(repository.repositoryPath, ['remote', 'get-url', 'origin'], true);
+      if (current.code === 0) {
+        await runGit(repository.repositoryPath, ['remote', 'set-url', 'origin', url]);
+      } else {
+        await runGit(repository.repositoryPath, ['remote', 'add', 'origin', url]);
+      }
+    } catch (error) {
+      throw new Error(friendlyGitError(error));
     }
+    if (prepared.credentials) await this.storeCredentials(url, prepared.credentials);
     return this.remember({ ...repository, remoteUrl: url });
   }
 
@@ -224,10 +378,10 @@ export class GitWorkspaceService {
     if (!(await exists(path.join(repositoryPath, '.git')))) {
       throw new Error('Choose a folder that contains a Git repository.');
     }
-    const remote = await runGit(repositoryPath, ['remote', 'get-url', 'origin'], true);
+    const remote = await this.getRemoteAccess(repositoryPath);
     return this.remember({
       repositoryPath,
-      remoteUrl: remote.code === 0 ? remote.stdout : undefined,
+      remoteUrl: remote?.url,
       displayName: repositoryName(repositoryPath),
     });
   }
@@ -264,19 +418,19 @@ export class GitWorkspaceService {
     await fs.rename(temporary, destination);
 
     try {
-      await runGit(cwd, ['add', '--', WORKSPACE_FILE]);
-      const changed = await runGit(cwd, ['diff', '--cached', '--quiet', '--', WORKSPACE_FILE], true);
+      await runGit(cwd, ['add', '-A', '--', DATA_DIRECTORY]);
+      const changed = await runGit(cwd, ['diff', '--cached', '--quiet', '--', DATA_DIRECTORY], true);
       if (changed.code !== 0) {
         await this.commit(
           cwd,
           `Update workspace · ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
-          [WORKSPACE_FILE],
+          [DATA_DIRECTORY],
         );
       }
 
       const branch = await this.currentBranch(cwd);
-      const remote = await runGit(cwd, ['remote', 'get-url', 'origin'], true);
-      if (remote.code !== 0 || !remote.stdout) {
+      const remote = await this.getRemoteAccess(cwd);
+      if (!remote) {
         return {
           status: 'local-only',
           message: 'Saved to the local Git repository.',
@@ -285,7 +439,7 @@ export class GitWorkspaceService {
         };
       }
 
-      const fetched = await runGit(cwd, ['fetch', 'origin'], true);
+      const fetched = await runGit(cwd, ['fetch', 'origin'], true, remote.credentials);
       if (fetched.code !== 0) {
         return {
           status: 'error',
@@ -295,7 +449,7 @@ export class GitWorkspaceService {
         };
       }
 
-      await runGit(cwd, ['remote', 'set-head', 'origin', '--auto'], true);
+      await runGit(cwd, ['remote', 'set-head', 'origin', '--auto'], true, remote.credentials);
       const remoteBranch = await this.findRemoteBranch(cwd, branch);
       if (remoteBranch) {
         const merged = await runGit(
@@ -317,11 +471,11 @@ export class GitWorkspaceService {
       }
 
       const pushRef = remoteBranch && remoteBranch !== branch ? `${branch}:${remoteBranch}` : branch;
-      const pushed = await runGit(cwd, ['push', '-u', 'origin', pushRef], true);
+      const pushed = await runGit(cwd, ['push', '-u', 'origin', pushRef], true, remote.credentials);
       if (pushed.code !== 0) {
         return {
           status: 'error',
-          message: friendlyGitError(new Error(pushed.stderr || pushed.stdout)),
+          message: friendlyGitError(new Error(pushed.stderr || pushed.stdout), 'write'),
           commit: await this.head(cwd),
           document: await this.loadWorkspace(),
         };
@@ -358,11 +512,12 @@ export class GitWorkspaceService {
     const branch = await this.currentBranch(cwd);
     const remoteBranch = await this.findRemoteBranch(cwd, branch);
     const pushRef = remoteBranch && remoteBranch !== branch ? `${branch}:${remoteBranch}` : branch;
-    const pushed = await runGit(cwd, ['push', '-u', 'origin', pushRef], true);
+    const remote = await this.getRemoteAccess(cwd);
+    const pushed = await runGit(cwd, ['push', '-u', 'origin', pushRef], true, remote?.credentials);
     if (pushed.code !== 0) {
       return {
         status: 'error',
-        message: friendlyGitError(new Error(pushed.stderr || pushed.stdout)),
+        message: friendlyGitError(new Error(pushed.stderr || pushed.stdout), 'write'),
         commit: await this.head(cwd),
         document: await this.loadWorkspace(),
       };
@@ -374,6 +529,148 @@ export class GitWorkspaceService {
       commit: await this.head(cwd),
       document: await this.loadWorkspace(),
     };
+  }
+
+  async importAttachments(sourcePaths: string[]): Promise<ImportedAttachment[]> {
+    const repository = this.requireConnection();
+    const cwd = repository.repositoryPath;
+    const root = path.join(cwd, ATTACHMENTS_DIRECTORY);
+    await fs.mkdir(root, { recursive: true });
+
+    const imported: ImportedAttachment[] = [];
+    try {
+      for (const source of sourcePaths) {
+        const stats = await inspectAttachmentSource(source);
+        const id = randomUUID();
+        const name = attachmentName(path.basename(source));
+        const attachmentDirectory = path.join(root, id);
+        const destination = path.join(attachmentDirectory, name);
+        await fs.mkdir(attachmentDirectory, { recursive: true });
+        try {
+          await fs.cp(source, destination, {
+            recursive: stats.kind === 'folder',
+            errorOnExist: true,
+            force: false,
+            filter: async (candidate) => !(await fs.lstat(candidate)).isSymbolicLink(),
+          });
+          imported.push({
+            id,
+            name,
+            kind: stats.kind,
+            relativePath: path.relative(cwd, destination).split(path.sep).join('/'),
+            sizeBytes: stats.sizeBytes,
+            fileCount: stats.fileCount,
+            createdAt: new Date().toISOString(),
+          });
+        } catch (error) {
+          await fs.rm(attachmentDirectory, { recursive: true, force: true });
+          throw error;
+        }
+      }
+      return imported;
+    } catch (error) {
+      await Promise.all(imported.map((attachment) => fs.rm(path.join(root, attachment.id), { recursive: true, force: true })));
+      throw error;
+    }
+  }
+
+  async resolveAttachmentPath(relativePath: string): Promise<string> {
+    const repository = this.requireConnection();
+    const root = path.resolve(repository.repositoryPath, ATTACHMENTS_DIRECTORY);
+    const target = path.resolve(repository.repositoryPath, relativePath);
+    if (target === root || !target.startsWith(`${root}${path.sep}`)) {
+      throw new Error('That attachment path is outside the workspace attachment store.');
+    }
+    if (!(await exists(target))) throw new Error('That attachment is no longer available.');
+    return target;
+  }
+
+  async removeAttachment(attachmentId: string): Promise<void> {
+    if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(attachmentId)) throw new Error('That attachment identifier is invalid.');
+    const repository = this.requireConnection();
+    const root = path.resolve(repository.repositoryPath, ATTACHMENTS_DIRECTORY);
+    const target = path.resolve(root, attachmentId);
+    if (!target.startsWith(`${root}${path.sep}`)) throw new Error('That attachment path is invalid.');
+    await fs.rm(target, { recursive: true, force: true });
+  }
+
+  private async sanitizeConnection(connection: RepositoryConnection): Promise<RepositoryConnection> {
+    if (!connection.remoteUrl) return connection;
+    const prepared = prepareRemote(connection.remoteUrl);
+    if (prepared.url === connection.remoteUrl) return connection;
+
+    if (prepared.credentials) await this.storeCredentials(prepared.url, prepared.credentials);
+    await runGit(connection.repositoryPath, ['remote', 'set-url', 'origin', prepared.url], true);
+    return { ...connection, remoteUrl: prepared.url };
+  }
+
+  private async getRemoteAccess(
+    repositoryPath: string,
+  ): Promise<{ url: string; credentials?: GitCredentials } | null> {
+    const remote = await runGit(repositoryPath, ['remote', 'get-url', 'origin'], true);
+    if (remote.code !== 0 || !remote.stdout) return null;
+
+    const prepared = prepareRemote(remote.stdout);
+    if (prepared.url !== remote.stdout) {
+      await runGit(repositoryPath, ['remote', 'set-url', 'origin', prepared.url]);
+    }
+    if (prepared.credentials) await this.storeCredentials(prepared.url, prepared.credentials);
+
+    return {
+      url: prepared.url,
+      credentials: prepared.credentials ?? await this.getCredentials(prepared.url),
+    };
+  }
+
+  private async readCredentialSettings(): Promise<CredentialSettings> {
+    const raw = await readJson(this.credentialsPath);
+    if (!raw || typeof raw !== 'object') return { version: 1, credentials: {} };
+    const candidate = raw as Partial<CredentialSettings>;
+    if (candidate.version !== 1 || !candidate.credentials || typeof candidate.credentials !== 'object') {
+      return { version: 1, credentials: {} };
+    }
+    const credentials = Object.fromEntries(
+      Object.entries(candidate.credentials).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    );
+    return { version: 1, credentials };
+  }
+
+  private async getCredentials(remoteUrl: string): Promise<GitCredentials | undefined> {
+    const key = credentialKey(remoteUrl);
+    const active = this.sessionCredentials.get(key);
+    if (active) return active;
+    if (!safeStorage.isEncryptionAvailable()) return undefined;
+
+    try {
+      const settings = await this.readCredentialSettings();
+      const encrypted = settings.credentials[key];
+      if (!encrypted) return undefined;
+      const parsed = JSON.parse(safeStorage.decryptString(Buffer.from(encrypted, 'base64'))) as GitCredentials;
+      const credentials = normalizeCredentials(parsed);
+      if (credentials) this.sessionCredentials.set(key, credentials);
+      return credentials;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async storeCredentials(remoteUrl: string, suppliedCredentials: GitCredentials): Promise<void> {
+    const credentials = normalizeCredentials(suppliedCredentials);
+    if (!credentials) return;
+    const key = credentialKey(remoteUrl);
+    this.sessionCredentials.set(key, credentials);
+    if (!safeStorage.isEncryptionAvailable()) return;
+
+    try {
+      const settings = await this.readCredentialSettings();
+      settings.credentials[key] = safeStorage
+        .encryptString(JSON.stringify(credentials))
+        .toString('base64');
+      await fs.mkdir(path.dirname(this.credentialsPath), { recursive: true });
+      await fs.writeFile(this.credentialsPath, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
+    } catch {
+      // Keep the credential in memory when secure persistence is unavailable.
+    }
   }
 
   private async readSettings(): Promise<ConnectionSettings> {

@@ -1,4 +1,4 @@
-export type WorkspaceView = 'board' | 'list' | 'timeline' | 'roadmap';
+export type WorkspaceView = 'board' | 'list' | 'timeline' | 'roadmap' | 'files';
 
 export type Priority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
 
@@ -8,6 +8,16 @@ export type Subtask = {
   completed: boolean;
 };
 
+export type WorkspaceAttachment = {
+  id: string;
+  name: string;
+  kind: 'file' | 'folder';
+  relativePath: string;
+  sizeBytes: number;
+  fileCount: number;
+  createdAt: string;
+};
+
 export type WorkItem = {
   id: string;
   projectId: string;
@@ -15,8 +25,11 @@ export type WorkItem = {
   title: string;
   description: string;
   priority: Priority;
+  estimateMinutes?: number;
   startDate?: string;
   dueDate?: string;
+  dependencyIds?: string[];
+  attachmentIds?: string[];
   labels: string[];
   assignee?: string;
   subtasks: Subtask[];
@@ -71,9 +84,22 @@ export type WorkspaceDocument = {
     kanban: KanbanModule;
     [moduleId: string]: unknown;
   };
+  resources: {
+    attachments: Record<string, WorkspaceAttachment>;
+    [resourceType: string]: unknown;
+  };
   preferences: {
     activeProjectId: string;
   };
+};
+
+export type TaskDraft = {
+  title: string;
+  columnId: string;
+  priority: Priority;
+  startDate?: string;
+  dueDate?: string;
+  estimateMinutes?: number;
 };
 
 export type WorkspaceAction =
@@ -83,6 +109,8 @@ export type WorkspaceAction =
   | { type: 'updateProject'; projectId: string; changes: Partial<Pick<Project, 'name' | 'description' | 'color' | 'targetDate'>> }
   | { type: 'addItem'; item: WorkItem }
   | { type: 'updateItem'; itemId: string; changes: Partial<Omit<WorkItem, 'id' | 'projectId' | 'createdAt'>> }
+  | { type: 'addAttachments'; itemId: string; attachments: WorkspaceAttachment[] }
+  | { type: 'removeAttachment'; attachmentId: string }
   | { type: 'deleteItem'; itemId: string }
   | { type: 'moveItem'; itemId: string; columnId: string; index: number }
   | { type: 'addColumn'; projectId: string; column: KanbanColumn }

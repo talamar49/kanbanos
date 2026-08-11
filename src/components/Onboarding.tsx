@@ -15,14 +15,16 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import kanbanosLogo from '../assets/kanbanos-logo.png';
+import kanbanosLogo from '../assets/kanbanos-mascot.png';
+import { useI18n } from '../i18n';
+import { PreferencesControls } from './PreferencesControls';
 
 type Props = {
   recentWorkspaces: RepositoryConnection[];
   onOpenRecent: (repositoryPath: string) => Promise<void>;
   onRemoveRecent: (repositoryPath: string) => Promise<void>;
   onCreateLocal: (name: string) => Promise<void>;
-  onConnectRemote: (url: string) => Promise<void>;
+  onConnectRemote: (url: string, credentials?: GitCredentials) => Promise<void>;
   onChooseLocal: () => Promise<void>;
 };
 
@@ -34,16 +36,20 @@ export function Onboarding({
   onConnectRemote,
   onChooseLocal,
 }: Props) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<'home' | 'create' | 'remote'>('home');
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
+  const [privateRepository, setPrivateRepository] = useState(false);
+  const [gitUsername, setGitUsername] = useState('');
+  const [gitToken, setGitToken] = useState('');
   const [busy, setBusy] = useState<'create' | 'remote' | 'local' | 'recent' | null>(null);
   const [activeRecentPath, setActiveRecentPath] = useState('');
   const [error, setError] = useState('');
 
   const createLocal = async () => {
     if (!name.trim()) {
-      setError('Give your workspace a name to continue.');
+      setError(t('Give your workspace a name to continue.'));
       return;
     }
     setBusy('create');
@@ -51,7 +57,7 @@ export function Onboarding({
     try {
       await onCreateLocal(name.trim());
     } catch (creationError) {
-      setError(creationError instanceof Error ? creationError.message : 'Could not create the workspace.');
+      setError(creationError instanceof Error ? t(creationError.message) : t('Could not create the workspace.'));
     } finally {
       setBusy(null);
     }
@@ -59,15 +65,22 @@ export function Onboarding({
 
   const connectRemote = async () => {
     if (!url.trim()) {
-      setError('Paste a Git repository URL to continue.');
+      setError(t('Paste a Git repository URL to continue.'));
+      return;
+    }
+    if (privateRepository && !gitToken.trim()) {
+      setError(t('Enter a personal access token or password to continue.'));
       return;
     }
     setBusy('remote');
     setError('');
     try {
-      await onConnectRemote(url.trim());
+      await onConnectRemote(
+        url.trim(),
+        privateRepository ? { username: gitUsername.trim(), token: gitToken } : undefined,
+      );
     } catch (connectionError) {
-      setError(connectionError instanceof Error ? connectionError.message : 'Could not connect.');
+      setError(connectionError instanceof Error ? t(connectionError.message) : t('Could not connect.'));
     } finally {
       setBusy(null);
     }
@@ -79,7 +92,7 @@ export function Onboarding({
     try {
       await onChooseLocal();
     } catch (connectionError) {
-      setError(connectionError instanceof Error ? connectionError.message : 'Could not open that workspace folder.');
+      setError(connectionError instanceof Error ? t(connectionError.message) : t('Could not open that workspace folder.'));
     } finally {
       setBusy(null);
     }
@@ -92,7 +105,7 @@ export function Onboarding({
     try {
       await onOpenRecent(repositoryPath);
     } catch (openError) {
-      setError(openError instanceof Error ? openError.message : 'Could not open that workspace.');
+      setError(openError instanceof Error ? t(openError.message) : t('Could not open that workspace.'));
     } finally {
       setBusy(null);
       setActiveRecentPath('');
@@ -106,44 +119,45 @@ export function Onboarding({
 
   return (
     <main className="onboarding page-enter">
-      <section className="onboarding-visual" aria-label="Kanbanos preview">
+      <PreferencesControls className="onboarding-preferences" expanded />
+      <section className="onboarding-visual" aria-label={t('Kanbanos preview')}>
         <div className="onboarding-glow onboarding-glow-one" />
         <div className="onboarding-glow onboarding-glow-two" />
-        <img className="mascot-cameo" src={kanbanosLogo} alt="Kabanos, the cheerful Kanbanos mascot" />
+        <img className="mascot-cameo" src={kanbanosLogo} alt={t('Kabanos, the cheerful Kanbanos mascot')} />
         <div className="preview-brand">
           <span className="brand-mark brand-mark-light brand-mascot"><img src={kanbanosLogo} alt="" /></span>
           <span>Kanbanos</span>
         </div>
         <div className="onboarding-message">
-          <div className="eyebrow"><Sparkles size={14} /> Thoughtfully simple</div>
-          <h1>Make space for<br />meaningful work.</h1>
-          <p>A calm, focused home for your projects—designed to help ideas move forward.</p>
+          <div className="eyebrow"><Sparkles size={14} /> {t('Thoughtfully simple')}</div>
+          <h1>{t('Make space for meaningful work.')}</h1>
+          <p>{t('A calm, focused home for your projects—designed to help ideas move forward.')}</p>
         </div>
         <div className="board-preview" aria-hidden="true">
           <div className="preview-column preview-column-back">
-            <div className="preview-column-title"><i /> Planned <span>3</span></div>
+            <div className="preview-column-title"><i /> {t('Planned')} <span>3</span></div>
             <div className="preview-task preview-task-muted">
-              <small>RESEARCH</small>
-              <strong>Explore onboarding flows</strong>
-              <div className="preview-meta"><span>◷ Tomorrow</span><b>AM</b></div>
+              <small>{t('Research')}</small>
+              <strong>{t('Explore onboarding flows')}</strong>
+              <div className="preview-meta"><span>◷ {t('Tomorrow')}</span><b>AM</b></div>
             </div>
           </div>
           <div className="preview-column preview-column-front">
-            <div className="preview-column-title"><i /> In progress <span>2</span></div>
+            <div className="preview-column-title"><i /> {t('In progress')} <span>2</span></div>
             <div className="preview-task">
-              <small>PRODUCT · DESIGN</small>
-              <strong>Shape the launch experience</strong>
-              <p>Bring the last details together.</p>
+              <small>{t('Product · Design')}</small>
+              <strong>{t('Shape the launch experience')}</strong>
+              <p>{t('Bring the last details together.')}</p>
               <div className="preview-progress"><span style={{ width: '66%' }} /></div>
-              <div className="preview-meta"><span><Check size={12} /> 2 of 3</span><b>SK</b></div>
+              <div className="preview-meta"><span><Check size={12} /> {t('2 of 3')}</span><b>SK</b></div>
             </div>
             <div className="preview-task preview-small">
-              <small>ENGINEERING</small>
-              <strong>Polish desktop interactions</strong>
+              <small>{t('Engineering')}</small>
+              <strong>{t('Polish desktop interactions')}</strong>
             </div>
           </div>
         </div>
-        <p className="onboarding-quote">“Clarity is a form of kindness.”</p>
+        <p className="onboarding-quote">{t('“Clarity is a form of kindness.”')}</p>
       </section>
 
       <section className="onboarding-connect">
@@ -151,17 +165,17 @@ export function Onboarding({
           {mode === 'home' && (
             <>
               <div className="connect-icon"><FolderGit2 size={23} /></div>
-              <p className="step-label">YOUR WORKSPACES</p>
-              <h2>{recentWorkspaces.length ? 'Welcome back' : 'Start your first workspace'}</h2>
+              <p className="step-label">{t('Your workspaces')}</p>
+              <h2>{t(recentWorkspaces.length ? 'Welcome back' : 'Start your first workspace')}</h2>
               <p className="connect-lead startup-lead">
-                {recentWorkspaces.length
+                {t(recentWorkspaces.length
                   ? 'Continue where you left off, or open another workspace.'
-                  : 'Create a private local workspace, open one from this device, or clone one from a remote repository.'}
+                  : 'Create a private local workspace, open one from this device, or clone one from a remote repository.')}
               </p>
 
               {recentWorkspaces.length > 0 && (
                 <div className="recent-workspaces">
-                  <p>RECENT</p>
+                  <p>{t('Recent')}</p>
                   <div className="recent-workspace-list">
                     {recentWorkspaces.map((workspace) => (
                       <div className="recent-workspace-row" key={workspace.repositoryPath}>
@@ -175,7 +189,7 @@ export function Onboarding({
                           </span>
                           {busy === 'recent' && activeRecentPath === workspace.repositoryPath ? <span className="spinner spinner-dark" /> : <ChevronRight size={16} />}
                         </button>
-                        <button className="recent-remove" title="Remove from recent workspaces" aria-label={`Remove ${workspace.displayName} from recent workspaces`} onClick={() => void onRemoveRecent(workspace.repositoryPath)}><X size={14} /></button>
+                        <button className="recent-remove" title={t('Remove from recent workspaces')} aria-label={t('Remove {{name}} from recent workspaces', { name: workspace.displayName })} onClick={() => void onRemoveRecent(workspace.repositoryPath)}><X size={14} /></button>
                       </div>
                     ))}
                   </div>
@@ -184,19 +198,19 @@ export function Onboarding({
 
               {error && <p className="form-error startup-error">{error}</p>}
               <button className="button button-primary button-connect" onClick={() => switchMode('create')} disabled={busy !== null}>
-                <Plus size={17} /> Create a new workspace
+                <Plus size={17} /> {t('Create a new workspace')}
               </button>
 
-              <div className="or-divider"><span>or open an existing workspace</span></div>
+              <div className="or-divider"><span>{t('or open an existing workspace')}</span></div>
               <div className="startup-actions">
                 <button onClick={() => void chooseLocal()} disabled={busy !== null}>
                   <span><FolderOpen size={18} /></span>
-                  <div><strong>Open workspace folder</strong><small>Find its folder on this device</small></div>
+                  <div><strong>{t('Open workspace folder')}</strong><small>{t('Find its folder on this device')}</small></div>
                   {busy === 'local' ? <span className="spinner spinner-dark" /> : <ChevronRight size={15} />}
                 </button>
                 <button onClick={() => switchMode('remote')} disabled={busy !== null}>
                   <span><GitBranch size={18} /></span>
-                  <div><strong>Clone remote workspace</strong><small>Download from a Git URL</small></div>
+                  <div><strong>{t('Clone remote workspace')}</strong><small>{t('Download from a Git URL')}</small></div>
                   <ChevronRight size={15} />
                 </button>
               </div>
@@ -205,14 +219,14 @@ export function Onboarding({
 
           {mode === 'create' && (
             <>
-              <button className="back-link" onClick={() => switchMode('home')}><ArrowLeft size={14} /> Back to workspaces</button>
+              <button className="back-link" onClick={() => switchMode('home')}><ArrowLeft size={14} /> {t('Back to workspaces')}</button>
               <div className="connect-icon"><FolderPlus size={23} /></div>
-              <p className="step-label">NEW LOCAL WORKSPACE</p>
-              <h2>Create your workspace</h2>
+              <p className="step-label">{t('New local workspace')}</p>
+              <h2>{t('Create your workspace')}</h2>
               <p className="connect-lead">
-                Name it first, then choose exactly where its folder should be created. A remote can be added later.
+                {t('Name it first, then choose exactly where its folder should be created. A remote can be added later.')}
               </p>
-              <label className="field-label" htmlFor="workspace-name">Workspace name</label>
+              <label className="field-label" htmlFor="workspace-name">{t('Workspace name')}</label>
               <div className={`repository-field ${error ? 'field-error' : ''}`}>
                 <FolderGit2 size={17} />
                 <input
@@ -220,27 +234,27 @@ export function Onboarding({
                   value={name}
                   onChange={(event) => { setName(event.target.value); setError(''); }}
                   onKeyDown={(event) => event.key === 'Enter' && void createLocal()}
-                  placeholder="My creative workspace"
+                  placeholder={t('My creative workspace')}
                   autoFocus
                 />
               </div>
               {error && <p className="form-error">{error}</p>}
               <button className="button button-primary button-connect" onClick={() => void createLocal()} disabled={busy !== null}>
-                {busy === 'create' ? <span className="spinner" /> : <>Choose location <ArrowRight size={17} /></>}
+                {busy === 'create' ? <span className="spinner" /> : <>{t('Choose location')} <ArrowRight size={17} /></>}
               </button>
             </>
           )}
 
           {mode === 'remote' && (
             <>
-              <button className="back-link" onClick={() => switchMode('home')}><ArrowLeft size={14} /> Back to workspaces</button>
+              <button className="back-link" onClick={() => switchMode('home')}><ArrowLeft size={14} /> {t('Back to workspaces')}</button>
               <div className="connect-icon"><GitBranch size={23} /></div>
-              <p className="step-label">REMOTE WORKSPACE</p>
-              <h2>Clone a remote workspace</h2>
+              <p className="step-label">{t('Remote workspace')}</p>
+              <h2>{t('Clone a remote workspace')}</h2>
               <p className="connect-lead">
-                Paste the Git URL. Kanbanos will clone the workspace to this device and remember it here.
+                {t('Paste the Git URL. Kanbanos will clone the workspace to this device and remember it here.')}
               </p>
-              <label className="field-label" htmlFor="repository-url">Git repository URL</label>
+              <label className="field-label" htmlFor="repository-url">{t('Git repository URL')}</label>
               <div className={`repository-field ${error ? 'field-error' : ''}`}>
                 <GitBranch size={17} />
                 <input
@@ -253,16 +267,59 @@ export function Onboarding({
                   autoFocus
                 />
               </div>
+              <label className="private-auth-toggle">
+                <input
+                  type="checkbox"
+                  checked={privateRepository}
+                  onChange={(event) => {
+                    setPrivateRepository(event.target.checked);
+                    if (!event.target.checked) setGitToken('');
+                    setError('');
+                  }}
+                />
+                <span><strong>{t('Private HTTPS repository')}</strong><small>{t('Authenticate with a personal access token or password')}</small></span>
+              </label>
+              {privateRepository && (
+                <div className="private-auth-fields">
+                  <label>
+                    <span className="field-label">{t('Username (optional)')}</span>
+                    <div className="repository-field">
+                      <input
+                        value={gitUsername}
+                        onChange={(event) => { setGitUsername(event.target.value); setError(''); }}
+                        placeholder="oauth2"
+                        autoComplete="username"
+                        dir="ltr"
+                      />
+                    </div>
+                  </label>
+                  <label>
+                    <span className="field-label">{t('Personal access token or password')}</span>
+                    <div className={`repository-field ${error && !gitToken.trim() ? 'field-error' : ''}`}>
+                      <input
+                        type="password"
+                        value={gitToken}
+                        onChange={(event) => { setGitToken(event.target.value); setError(''); }}
+                        onKeyDown={(event) => event.key === 'Enter' && void connectRemote()}
+                        placeholder={t('Token with repository access')}
+                        autoComplete="off"
+                        dir="ltr"
+                      />
+                    </div>
+                  </label>
+                  <p className="private-auth-hint">{t('SSH URLs use your existing SSH key and do not need a token here.')}</p>
+                </div>
+              )}
               {error && <p className="form-error">{error}</p>}
               <button className="button button-primary button-connect" onClick={() => void connectRemote()} disabled={busy !== null}>
-                {busy === 'remote' ? <span className="spinner" /> : <>Clone workspace <ArrowRight size={17} /></>}
+                {busy === 'remote' ? <span className="spinner" /> : <>{t('Clone workspace')} <ArrowRight size={17} /></>}
               </button>
             </>
           )}
 
           <div className="trust-note startup-trust">
             <LockKeyhole size={16} />
-            <span><strong>Your work stays yours.</strong> Workspaces live in folders you control.</span>
+            <span><strong>{t('Your work stays yours.')}</strong> {t('Workspaces live in folders you control.')}</span>
           </div>
         </div>
       </section>

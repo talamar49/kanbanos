@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Cloud, GitBranch, ShieldCheck, X } from 'lucide-react';
+import { useI18n } from '../i18n';
 
 type Props = {
   currentUrl?: string;
-  onConnect: (url: string) => Promise<void>;
+  onConnect: (url: string, credentials?: GitCredentials) => Promise<void>;
   onClose: () => void;
 };
 
 export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
+  const { t } = useI18n();
   const [url, setUrl] = useState(currentUrl ?? '');
+  const [privateRepository, setPrivateRepository] = useState(false);
+  const [gitUsername, setGitUsername] = useState('');
+  const [gitToken, setGitToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -20,16 +25,23 @@ export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
 
   const connect = async () => {
     if (!url.trim()) {
-      setError('Enter a Git repository URL.');
+      setError(t('Enter a Git repository URL.'));
+      return;
+    }
+    if (privateRepository && !gitToken.trim()) {
+      setError(t('Enter a personal access token or password to continue.'));
       return;
     }
     setBusy(true);
     setError('');
     try {
-      await onConnect(url.trim());
+      await onConnect(
+        url.trim(),
+        privateRepository ? { username: gitUsername.trim(), token: gitToken } : undefined,
+      );
       onClose();
     } catch (connectionError) {
-      setError(connectionError instanceof Error ? connectionError.message : 'Could not add that remote.');
+      setError(connectionError instanceof Error ? t(connectionError.message) : t('Could not add that remote.'));
     } finally {
       setBusy(false);
     }
@@ -37,17 +49,17 @@ export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
 
   return (
     <div className="modal-backdrop fade-in" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="remote-modal modal-enter" role="dialog" aria-modal="true" aria-label="Remote repository">
+      <section className="remote-modal modal-enter" role="dialog" aria-modal="true" aria-label={t('Remote repository')}>
         <header className="simple-modal-header">
           <span className="remote-modal-icon"><Cloud size={21} /></span>
           <div>
-            <h2>{currentUrl ? 'Change remote repository' : 'Keep this workspace in sync'}</h2>
-            <p>{currentUrl ? 'Future saves will sync with the new remote.' : 'Optional — your local workspace already works on its own.'}</p>
+            <h2>{t(currentUrl ? 'Change remote repository' : 'Keep this workspace in sync')}</h2>
+            <p>{t(currentUrl ? 'Future saves will sync with the new remote.' : 'Optional — your local workspace already works on its own.')}</p>
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="Close"><X size={18} /></button>
+          <button className="icon-button" onClick={onClose} aria-label={t('Close')}><X size={18} /></button>
         </header>
         <div className="remote-modal-body">
-          <label className="field-label" htmlFor="remote-url">Git repository URL</label>
+          <label className="field-label" htmlFor="remote-url">{t('Git repository URL')}</label>
           <div className={`repository-field ${error ? 'field-error' : ''}`}>
             <GitBranch size={17} />
             <input
@@ -60,13 +72,56 @@ export function RemoteModal({ currentUrl, onConnect, onClose }: Props) {
               autoFocus
             />
           </div>
+          <label className="private-auth-toggle">
+            <input
+              type="checkbox"
+              checked={privateRepository}
+              onChange={(event) => {
+                setPrivateRepository(event.target.checked);
+                if (!event.target.checked) setGitToken('');
+                setError('');
+              }}
+            />
+            <span><strong>{t('Private HTTPS repository')}</strong><small>{t('Authenticate with a personal access token or password')}</small></span>
+          </label>
+          {privateRepository && (
+            <div className="private-auth-fields">
+              <label>
+                <span className="field-label">{t('Username (optional)')}</span>
+                <div className="repository-field">
+                  <input
+                    value={gitUsername}
+                    onChange={(event) => { setGitUsername(event.target.value); setError(''); }}
+                    placeholder="oauth2"
+                    autoComplete="username"
+                    dir="ltr"
+                  />
+                </div>
+              </label>
+              <label>
+                <span className="field-label">{t('Personal access token or password')}</span>
+                <div className={`repository-field ${error && !gitToken.trim() ? 'field-error' : ''}`}>
+                  <input
+                    type="password"
+                    value={gitToken}
+                    onChange={(event) => { setGitToken(event.target.value); setError(''); }}
+                    onKeyDown={(event) => event.key === 'Enter' && void connect()}
+                    placeholder={t('Token with repository access')}
+                    autoComplete="off"
+                    dir="ltr"
+                  />
+                </div>
+              </label>
+              <p className="private-auth-hint">{t('SSH URLs use your existing SSH key and do not need a token here.')}</p>
+            </div>
+          )}
           {error && <p className="form-error">{error}</p>}
-          <div className="remote-note"><ShieldCheck size={16} /><span>Kanbanos uses your existing Git credentials. The remote is contacted only when you save or sync.</span></div>
+          <div className="remote-note"><ShieldCheck size={16} /><span>{t(privateRepository ? 'Credentials are kept out of the remote URL and encrypted when stored.' : 'Kanbanos verifies the remote when you add it and uses your existing Git credentials for sync.')}</span></div>
         </div>
         <footer className="simple-modal-footer">
-          <button className="button button-secondary" onClick={onClose} disabled={busy}>Not now</button>
+          <button className="button button-secondary" onClick={onClose} disabled={busy}>{t('Not now')}</button>
           <button className="button button-primary" onClick={() => void connect()} disabled={busy || !url.trim()}>
-            {busy ? <span className="spinner" /> : <><Cloud size={15} /> {currentUrl ? 'Update remote' : 'Add remote'}</>}
+            {busy ? <span className="spinner" /> : <><Cloud size={15} /> {t(currentUrl ? 'Update remote' : 'Add remote')}</>}
           </button>
         </footer>
       </section>

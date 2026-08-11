@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   closestCorners,
   DndContext,
@@ -26,6 +26,9 @@ import {
 } from 'lucide-react';
 import type { KanbanColumn, Priority, Project, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
 import { createWorkItem, itemsForColumn, PRIORITY_META } from '../domain/workspace';
+import { useI18n } from '../i18n';
+import { PreferencesControls } from './PreferencesControls';
+import { ProjectScopeSelect, type ProjectScope } from './ProjectScopeSelect';
 import { TaskCard } from './TaskCard';
 
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
@@ -47,14 +50,18 @@ type ColumnProps = {
   items: WorkItem[];
   projectId: string;
   allColumns: KanbanColumn[];
+  projectById: ReadonlyMap<string, Project>;
+  aggregate: boolean;
   onAction: (action: WorkspaceAction) => void;
   onOpenTask: (item: WorkItem) => void;
 };
 
-function BoardColumn({ column, items, projectId, allColumns, onAction, onOpenTask }: ColumnProps) {
+function BoardColumn({ column, items, projectId, allColumns, projectById, aggregate, onAction, onOpenTask }: ColumnProps) {
+  const { t } = useI18n();
   const { setNodeRef, isOver } = useDroppable({
     id: `column:${column.id}`,
     data: { type: 'column', columnId: column.id },
+    disabled: aggregate,
   });
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
@@ -62,6 +69,13 @@ function BoardColumn({ column, items, projectId, allColumns, onAction, onOpenTas
   const [renaming, setRenaming] = useState(false);
   const [columnTitle, setColumnTitle] = useState(column.title);
   const composerRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!aggregate) return;
+    setAdding(false);
+    setMenuOpen(false);
+    setRenaming(false);
+  }, [aggregate]);
 
   const addTask = () => {
     const clean = title.trim();
@@ -85,7 +99,7 @@ function BoardColumn({ column, items, projectId, allColumns, onAction, onOpenTas
   const deleteColumn = () => {
     const destination = allColumns.find((candidate) => candidate.id !== column.id);
     if (!destination) return;
-    if (window.confirm(`Delete “${column.title}”? Its cards will move to “${destination.title}”.`)) {
+    if (window.confirm(t('Delete “{{column}}”? Its cards will move to “{{destination}}”.', { column: t(column.title), destination: t(destination.title) }))) {
       onAction({
         type: 'deleteColumn',
         projectId,
@@ -103,7 +117,7 @@ function BoardColumn({ column, items, projectId, allColumns, onAction, onOpenTas
       <header className="column-header">
         <div className="column-heading">
           <i style={{ background: column.color }} />
-          {renaming ? (
+          {!aggregate && renaming ? (
             <input
               className="column-title-input"
               value={columnTitle}
@@ -115,33 +129,35 @@ function BoardColumn({ column, items, projectId, allColumns, onAction, onOpenTas
               }}
               autoFocus
             />
-          ) : <h2>{column.title}</h2>}
+          ) : <h2>{t(column.title)}</h2>}
           <span>{items.length}</span>
-          {column.limit && <small className={atLimit ? 'limit-reached' : ''}>{items.length}/{column.limit}</small>}
+          {!aggregate && column.limit && <small className={atLimit ? 'limit-reached' : ''}>{items.length}/{column.limit}</small>}
         </div>
-        <div className="column-actions">
-          <button className="icon-button" aria-label={`Add task to ${column.title}`} onClick={() => {
-            setAdding(true);
-            setTimeout(() => composerRef.current?.focus(), 0);
-          }}><Plus size={16} /></button>
-          <div className="relative">
-            <button className="icon-button" aria-label="Column options" onClick={() => setMenuOpen((open) => !open)}><Ellipsis size={17} /></button>
-            {menuOpen && (
-              <div className="popover column-menu scale-in">
-                <button onClick={() => { setRenaming(true); setMenuOpen(false); }}>Rename column</button>
-                <button onClick={() => {
-                  const value = window.prompt('Work-in-progress limit (leave empty for none)', column.limit?.toString() ?? '');
-                  if (value !== null) {
-                    const limit = value.trim() ? Math.max(1, Number(value)) : undefined;
-                    if (!value.trim() || Number.isFinite(limit)) onAction({ type: 'updateColumn', projectId, columnId: column.id, changes: { limit } });
-                  }
-                  setMenuOpen(false);
-                }}>Set WIP limit</button>
-                {allColumns.length > 1 && <button className="danger-option" onClick={deleteColumn}>Delete column</button>}
-              </div>
-            )}
+        {!aggregate && (
+          <div className="column-actions">
+            <button className="icon-button" aria-label={t('Add task to {{name}}', { name: t(column.title) })} onClick={() => {
+              setAdding(true);
+              setTimeout(() => composerRef.current?.focus(), 0);
+            }}><Plus size={16} /></button>
+            <div className="relative">
+              <button className="icon-button" aria-label={t('Column options')} onClick={() => setMenuOpen((open) => !open)}><Ellipsis size={17} /></button>
+              {menuOpen && (
+                <div className="popover column-menu scale-in">
+                  <button onClick={() => { setRenaming(true); setMenuOpen(false); }}>{t('Rename column')}</button>
+                  <button onClick={() => {
+                    const value = window.prompt(t('Work-in-progress limit (leave empty for none)'), column.limit?.toString() ?? '');
+                    if (value !== null) {
+                      const limit = value.trim() ? Math.max(1, Number(value)) : undefined;
+                      if (!value.trim() || Number.isFinite(limit)) onAction({ type: 'updateColumn', projectId, columnId: column.id, changes: { limit } });
+                    }
+                    setMenuOpen(false);
+                  }}>{t('Set WIP limit')}</button>
+                  {allColumns.length > 1 && <button className="danger-option" onClick={deleteColumn}>{t('Delete column')}</button>}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </header>
 
       <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
@@ -150,6 +166,8 @@ function BoardColumn({ column, items, projectId, allColumns, onAction, onOpenTas
             <TaskCard
               key={item.id}
               item={item}
+              project={aggregate ? projectById.get(item.projectId) : undefined}
+              dragDisabled={aggregate}
               onOpen={onOpenTask}
               onToggleSubtask={(itemId, subtaskId) => onAction({
                 type: 'updateItem',
@@ -162,72 +180,97 @@ function BoardColumn({ column, items, projectId, allColumns, onAction, onOpenTas
               })}
             />
           ))}
-          {items.length === 0 && !adding && (
+          {items.length === 0 && !adding && (aggregate ? (
+            <div className="empty-column aggregate-empty">
+              <Sparkles size={18} />
+              <span>{t('No missions in this column')}</span>
+            </div>
+          ) : (
             <button className="empty-column" onClick={() => setAdding(true)}>
               <Sparkles size={18} />
-              <span>Clear space for what’s next</span>
-              <small>Add the first task</small>
+              <span>{t('Clear space for what’s next')}</span>
+              <small>{t('Add the first task')}</small>
             </button>
-          )}
+          ))}
         </div>
       </SortableContext>
 
-      {adding ? (
+      {!aggregate && (adding ? (
         <div className="quick-add slide-up">
           <input
             ref={composerRef}
             value={title}
             onChange={(event) => setTitle(event.target.value)}
-            placeholder="What needs to be done?"
+            placeholder={t('What needs to be done?')}
             onKeyDown={(event) => {
               if (event.key === 'Enter') addTask();
               if (event.key === 'Escape') setAdding(false);
             }}
             autoFocus
           />
-          <div><span>Press Enter to add</span><button onClick={() => setAdding(false)}><X size={14} /></button><button className="quick-add-submit" onClick={addTask}>Add task</button></div>
+          <div><span>{t('Press Enter to add')}</span><button onClick={() => setAdding(false)}><X size={14} /></button><button className="quick-add-submit" onClick={addTask}>{t('Add task')}</button></div>
         </div>
       ) : (
         <button className="add-task-button" onClick={() => {
           setAdding(true);
           setTimeout(() => composerRef.current?.focus(), 0);
-        }}><Plus size={15} /> Add task</button>
-      )}
+        }}><Plus size={15} /> {t('Add task')}</button>
+      ))}
     </section>
   );
 }
 
 export function KanbanBoard({ document, project, saveState, dirty, onAction, onOpenTask, onSave, onEditProject, onChangeView }: Props) {
+  const { t } = useI18n();
   const [search, setSearch] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [priorities, setPriorities] = useState<Priority[]>([]);
   const [addingColumn, setAddingColumn] = useState(false);
   const [columnName, setColumnName] = useState('');
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const [scope, setScope] = useState<ProjectScope>('current');
+
+  useEffect(() => setScope('current'), [project.id]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const settings = document.modules.kanban.projects[project.id];
-  const columns = settings?.columns ?? [];
+  const showAllProjects = scope === 'all';
+  const activeColumns = document.modules.kanban.projects[project.id]?.columns ?? [];
+  const scopedProjects = useMemo(() => showAllProjects
+    ? [project, ...document.projects.filter((candidate) => candidate.id !== project.id && !candidate.archived)]
+    : [project], [document.projects, project, showAllProjects]);
+  const scopedProjectIds = useMemo(() => new Set(scopedProjects.map((candidate) => candidate.id)), [scopedProjects]);
+  const projectById = useMemo(() => new Map(document.projects.map((candidate) => [candidate.id, candidate])), [document.projects]);
+  const projectOrder = useMemo(() => new Map(scopedProjects.map((candidate, index) => [candidate.id, index])), [scopedProjects]);
+  const columns = useMemo(() => {
+    const seen = new Set<string>();
+    return scopedProjects.flatMap((candidate) => document.modules.kanban.projects[candidate.id]?.columns ?? [])
+      .filter((column) => {
+        if (seen.has(column.id)) return false;
+        seen.add(column.id);
+        return true;
+      });
+  }, [document.modules.kanban.projects, scopedProjects]);
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const visibleItems = useMemo(() => {
     return Object.values(document.items).filter((item) => {
-      if (item.projectId !== project.id) return false;
+      if (!scopedProjectIds.has(item.projectId)) return false;
       if (priorities.length > 0 && !priorities.includes(item.priority)) return false;
       if (!normalizedSearch) return true;
       return [item.title, item.description, ...item.labels].join(' ').toLocaleLowerCase().includes(normalizedSearch);
     });
-  }, [document.items, normalizedSearch, priorities, project.id]);
+  }, [document.items, normalizedSearch, priorities, scopedProjectIds]);
 
-  const filteredColumnItems = (columnId: string) => {
-    const order = itemsForColumn(document, project.id, columnId).map((item) => item.id);
-    return visibleItems
-      .filter((item) => item.moduleData.kanban.columnId === columnId)
-      .sort((left, right) => order.indexOf(left.id) - order.indexOf(right.id));
-  };
+  const filteredColumnItems = (columnId: string) => visibleItems
+    .filter((item) => item.moduleData.kanban.columnId === columnId)
+    .sort((left, right) => {
+      const projectDifference = (projectOrder.get(left.projectId) ?? Number.MAX_SAFE_INTEGER)
+        - (projectOrder.get(right.projectId) ?? Number.MAX_SAFE_INTEGER);
+      return projectDifference || left.moduleData.kanban.rank - right.moduleData.kanban.rank;
+    });
 
   const onDragStart = ({ active }: DragStartEvent) => {
     setDraggingItemId(String(active.id));
@@ -240,7 +283,9 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
     if (!item) return;
     const overData = over.data.current as { type?: string; columnId?: string } | undefined;
     const columnId = overData?.columnId ?? String(over.id).replace('column:', '');
-    const targetItems = itemsForColumn(document, project.id, columnId);
+    const itemColumns = document.modules.kanban.projects[item.projectId]?.columns ?? [];
+    if (!itemColumns.some((column) => column.id === columnId)) return;
+    const targetItems = itemsForColumn(document, item.projectId, columnId);
     const overIndex = overData?.type === 'item'
       ? Math.max(0, targetItems.findIndex((target) => target.id === String(over.id)))
       : targetItems.length;
@@ -257,7 +302,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
       column: {
         id: `column-${crypto.randomUUID()}`,
         title,
-        color: colors[columns.length % colors.length],
+        color: colors[activeColumns.length % colors.length],
       },
     });
     setColumnName('');
@@ -266,24 +311,26 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
 
   const draggingItem = draggingItemId ? document.items[draggingItemId] : undefined;
   const projectAssignees = Array.from(new Set(
-    Object.values(document.items).filter((item) => item.projectId === project.id).map((item) => item.assignee).filter(Boolean),
+    Object.values(document.items).filter((item) => scopedProjectIds.has(item.projectId)).map((item) => item.assignee).filter(Boolean),
   )).slice(0, 4) as string[];
+  const scopeTitle = showAllProjects ? t('All projects') : project.name;
 
   return (
     <main className="workspace-main">
       <header className="board-topbar">
-        <div className="breadcrumbs"><span>Projects</span><b>/</b><strong>{project.name}</strong></div>
+        <div className="breadcrumbs"><span>{t('Projects')}</span><b>/</b><strong>{scopeTitle}</strong></div>
         <div className="topbar-actions">
+          <PreferencesControls />
           <div className="member-stack">
             {projectAssignees.map((assignee) => <span key={assignee}>{assignee}</span>)}
-            <button aria-label="Invite collaborator"><Plus size={13} /></button>
+            <button aria-label={t('Invite collaborator')}><Plus size={13} /></button>
           </div>
           <button
             className={`button save-button ${dirty ? 'save-dirty' : ''}`}
             disabled={saveState === 'saving' || (!dirty && saveState === 'synced')}
             onClick={onSave}
           >
-            {saveState === 'saving' ? <><span className="spinner spinner-dark" /> Saving</> : saveState === 'synced' && !dirty ? <><Check size={16} /> Saved</> : 'Save changes'}
+            {saveState === 'saving' ? <><span className="spinner spinner-dark" /> {t('Saving')}</> : saveState === 'synced' && !dirty ? <><Check size={16} /> {t('Saved')}</> : t('Save changes')}
           </button>
           <button className="icon-button top-more" onClick={onEditProject}><Ellipsis size={18} /></button>
         </div>
@@ -292,36 +339,37 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
       <div className="board-heading-row">
         <div className="board-title">
           <span className="project-icon" style={{ background: `${project.color}18`, color: project.color }}><LayoutGrid size={21} /></span>
-          <div><h1>{project.name}</h1><p>{project.description || 'A focused space for moving work forward.'}</p></div>
+          <div><h1>{scopeTitle}</h1><p>{showAllProjects ? t('Missions across every project in this workspace.') : project.description || t('A focused space for moving work forward.')}</p></div>
         </div>
-        <div className="board-view-toggle"><button className="active"><LayoutGrid size={15} /> Board</button><button onClick={() => onChangeView('list')}><ListFilter size={15} /> List</button></div>
+        <div className="board-view-toggle"><button className="active"><LayoutGrid size={15} /> {t('Board')}</button><button onClick={() => onChangeView('list')}><ListFilter size={15} /> {t('List')}</button></div>
       </div>
 
       <div className="board-toolbar">
         <div className={`search-box ${search ? 'has-value' : ''}`}>
           <Search size={16} />
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search this project" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t(showAllProjects ? 'Search all projects' : 'Search this project')} />
           {search && <button onClick={() => setSearch('')}><X size={14} /></button>}
         </div>
+        <ProjectScopeSelect project={project} value={scope} onChange={setScope} />
         <div className="relative">
           <button className={`toolbar-button ${priorities.length ? 'active' : ''}`} onClick={() => setFilterOpen((open) => !open)}>
-            <Filter size={15} /> Filter {priorities.length > 0 && <span>{priorities.length}</span>} <ChevronDown size={13} />
+            <Filter size={15} /> {t('Filter')} {priorities.length > 0 && <span>{priorities.length}</span>} <ChevronDown size={13} />
           </button>
           {filterOpen && (
             <div className="popover filter-menu scale-in">
-              <p>Show priority</p>
+              <p>{t('Show priority')}</p>
               {(Object.keys(PRIORITY_META) as Priority[]).filter((priority) => priority !== 'none').map((priority) => (
                 <button key={priority} onClick={() => setPriorities((current) => current.includes(priority) ? current.filter((value) => value !== priority) : [...current, priority])}>
                   <i style={{ background: PRIORITY_META[priority].color }} />
-                  <span>{PRIORITY_META[priority].label}</span>
+                  <span>{t(PRIORITY_META[priority].label)}</span>
                   <b className={priorities.includes(priority) ? 'checked' : ''}>{priorities.includes(priority) && <Check size={12} />}</b>
                 </button>
               ))}
-              {priorities.length > 0 && <button className="clear-filter" onClick={() => setPriorities([])}>Clear filters</button>}
+              {priorities.length > 0 && <button className="clear-filter" onClick={() => setPriorities([])}>{t('Clear filters')}</button>}
             </div>
           )}
         </div>
-        {(search || priorities.length > 0) && <span className="result-count">{visibleItems.length} matching {visibleItems.length === 1 ? 'task' : 'tasks'}</span>}
+        {(search || priorities.length > 0) && <span className="result-count">{t(visibleItems.length === 1 ? '{{count}} matching task' : '{{count}} matching tasks', { count: visibleItems.length })}</span>}
       </div>
 
       <DndContext
@@ -340,27 +388,31 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
                 items={filteredColumnItems(column.id)}
                 projectId={project.id}
                 allColumns={columns}
+                projectById={projectById}
+                aggregate={showAllProjects}
                 onAction={onAction}
                 onOpenTask={onOpenTask}
               />
             ))}
-            <div className="add-column-wrap">
-              {addingColumn ? (
-                <div className="add-column-form slide-up">
-                  <input
-                    value={columnName}
-                    onChange={(event) => setColumnName(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') addColumn();
-                      if (event.key === 'Escape') setAddingColumn(false);
-                    }}
-                    placeholder="Column name"
-                    autoFocus
-                  />
-                  <div><button className="button button-primary" onClick={addColumn}>Add column</button><button className="icon-button" onClick={() => setAddingColumn(false)}><X size={16} /></button></div>
-                </div>
-              ) : <button className="add-column-button" onClick={() => setAddingColumn(true)}><Plus size={16} /> Add column</button>}
-            </div>
+            {!showAllProjects && (
+              <div className="add-column-wrap">
+                {addingColumn ? (
+                  <div className="add-column-form slide-up">
+                    <input
+                      value={columnName}
+                      onChange={(event) => setColumnName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') addColumn();
+                        if (event.key === 'Escape') setAddingColumn(false);
+                      }}
+                      placeholder={t('Column name')}
+                      autoFocus
+                    />
+                    <div><button className="button button-primary" onClick={addColumn}>{t('Add column')}</button><button className="icon-button" onClick={() => setAddingColumn(false)}><X size={16} /></button></div>
+                  </div>
+                ) : <button className="add-column-button" onClick={() => setAddingColumn(true)}><Plus size={16} /> {t('Add column')}</button>}
+              </div>
+            )}
           </div>
         </div>
         <DragOverlay dropAnimation={{ duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' }}>
@@ -373,7 +425,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
               )}
               <h3>{draggingItem.title}</h3>
               {draggingItem.description && <p className="card-description">{draggingItem.description}</p>}
-              <div className="drag-overlay-hint">Drop to move</div>
+              <div className="drag-overlay-hint">{t('Drop to move')}</div>
             </article>
           ) : null}
         </DragOverlay>

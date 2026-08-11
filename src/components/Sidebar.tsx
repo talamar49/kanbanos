@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   CalendarRange,
   ChartNoAxesGantt,
@@ -9,11 +10,14 @@ import {
   Ellipsis,
   FolderOpen,
   LogOut,
+  Paperclip,
   Plus,
+  RefreshCw,
   Settings2,
 } from 'lucide-react';
-import kanbanosLogo from '../assets/kanbanos-logo.png';
+import kanbanosLogo from '../assets/kanbanos-mascot.png';
 import type { Project, WorkspaceDocument, WorkspaceView } from '../domain/types';
+import { useI18n } from '../i18n';
 
 type SyncState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
 
@@ -22,6 +26,7 @@ type Props = {
   activeProject: Project;
   repositoryName: string;
   syncState: SyncState;
+  syncError: string;
   activeView: WorkspaceView;
   onChangeView: (view: WorkspaceView) => void;
   onSelectProject: (projectId: string) => void;
@@ -29,6 +34,7 @@ type Props = {
   onRenameProject: (projectId: string) => void;
   hasRemote: boolean;
   onAddRemote: () => void;
+  onRetrySync: () => void;
   onRevealRepository: () => void;
   onDisconnect: () => void;
 };
@@ -38,6 +44,7 @@ export function Sidebar({
   activeProject,
   repositoryName,
   syncState,
+  syncError,
   activeView,
   onChangeView,
   onSelectProject,
@@ -45,17 +52,19 @@ export function Sidebar({
   onRenameProject,
   hasRemote,
   onAddRemote,
+  onRetrySync,
   onRevealRepository,
   onDisconnect,
 }: Props) {
+  const { direction, t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [projectMenuId, setProjectMenuId] = useState<string | null>(null);
+  const [projectMenu, setProjectMenu] = useState<{ id: string; top: number; left: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
-      if (!(event.target as Element).closest('.project-menu-host')) setProjectMenuId(null);
+      if (!(event.target as Element).closest('.project-menu-host, .project-options-menu')) setProjectMenu(null);
     };
     window.addEventListener('mousedown', close);
     return () => window.removeEventListener('mousedown', close);
@@ -67,7 +76,7 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <span className="brand-mark brand-mascot"><img src={kanbanosLogo} alt="Kanbanos mascot" /></span>
+        <span className="brand-mark brand-mascot"><img src={kanbanosLogo} alt={t('Kanbanos mascot')} /></span>
         <span className="brand-name">Kanbanos</span>
       </div>
 
@@ -75,42 +84,43 @@ export function Sidebar({
         <button className="workspace-button" onClick={() => setMenuOpen((open) => !open)}>
           <span className="workspace-avatar">{repositoryName.slice(0, 1).toUpperCase()}</span>
           <span className="workspace-copy">
-            <small>WORKSPACE</small>
+            <small>{t('Workspace')}</small>
             <strong>{repositoryName}</strong>
           </span>
           <ChevronDown size={15} />
         </button>
         {menuOpen && (
           <div className="popover workspace-menu scale-in">
-            <button onClick={() => { onAddRemote(); setMenuOpen(false); }}><Cloud size={15} /> {hasRemote ? 'Change remote repository' : 'Add remote repository'}</button>
-            <button onClick={onRevealRepository}><FolderOpen size={15} /> Open repository folder</button>
-            <button><Settings2 size={15} /> Workspace settings <span className="coming-pill">Soon</span></button>
+            <button onClick={() => { onAddRemote(); setMenuOpen(false); }}><Cloud size={15} /> {t(hasRemote ? 'Change remote repository' : 'Add remote repository')}</button>
+            <button onClick={onRevealRepository}><FolderOpen size={15} /> {t('Open repository folder')}</button>
+            <button><Settings2 size={15} /> {t('Workspace settings')} <span className="coming-pill">{t('Soon')}</span></button>
             <div className="popover-separator" />
-            <button className="danger-option" onClick={onDisconnect}><LogOut size={15} /> Disconnect workspace</button>
+            <button className="danger-option" onClick={onDisconnect}><LogOut size={15} /> {t('Disconnect workspace')}</button>
           </div>
         )}
       </div>
 
-      <nav className="primary-nav" aria-label="Workspace views">
-        <p className="nav-label">WORKSPACE</p>
-        <button className={`nav-item ${activeView === 'board' || activeView === 'list' ? 'active' : ''}`} onClick={() => onChangeView('board')}><Columns3 size={17} /><span>Project work</span></button>
-        <button className={`nav-item ${activeView === 'timeline' ? 'active' : ''}`} onClick={() => onChangeView('timeline')}><CalendarRange size={17} /><span>Timeline</span></button>
-        <button className={`nav-item ${activeView === 'roadmap' ? 'active' : ''}`} onClick={() => onChangeView('roadmap')}><ChartNoAxesGantt size={17} /><span>Roadmap</span></button>
+      <nav className="primary-nav" aria-label={t('Workspace views')}>
+        <p className="nav-label">{t('Workspace')}</p>
+        <button className={`nav-item ${activeView === 'board' || activeView === 'list' ? 'active' : ''}`} onClick={() => onChangeView('board')}><Columns3 size={17} /><span>{t('Project work')}</span></button>
+        <button className={`nav-item ${activeView === 'timeline' ? 'active' : ''}`} onClick={() => onChangeView('timeline')}><CalendarRange size={17} /><span>{t('Timeline')}</span></button>
+        <button className={`nav-item ${activeView === 'roadmap' ? 'active' : ''}`} onClick={() => onChangeView('roadmap')}><ChartNoAxesGantt size={17} /><span>{t('Roadmap')}</span></button>
+        <button className={`nav-item ${activeView === 'files' ? 'active' : ''}`} onClick={() => onChangeView('files')}><Paperclip size={17} /><span>{t('Files')}</span><em>{Object.keys(document.resources.attachments).length}</em></button>
       </nav>
 
-      <nav className="project-nav" aria-label="Projects">
+      <nav className="project-nav" aria-label={t('Projects')}>
         <div className="nav-label-row">
-          <p className="nav-label">PROJECTS</p>
-          <button className="icon-button icon-button-small" aria-label="Add project" onClick={onAddProject}><Plus size={15} /></button>
+          <p className="nav-label">{t('Projects')}</p>
+          <button className="icon-button icon-button-small" aria-label={t('Add project')} onClick={onAddProject}><Plus size={15} /></button>
         </div>
         <div className="project-list">
           {document.projects.filter((project) => !project.archived).map((project) => (
             <div className="project-list-row" key={project.id}>
               <button
                 className={`project-item ${activeProject.id === project.id ? 'active' : ''}`}
-                onClick={() => { onSelectProject(project.id); setProjectMenuId(null); }}
+                onClick={() => { onSelectProject(project.id); setProjectMenu(null); }}
                 onDoubleClick={() => onRenameProject(project.id)}
-                title="Double-click to rename"
+                title={t('Double-click to rename')}
               >
                 <span className="project-dot" style={{ background: project.color }} />
                 <span>{project.name}</span>
@@ -119,33 +129,56 @@ export function Sidebar({
               <div className="project-menu-host">
                 <button
                   className="project-more"
-                  aria-label={`Options for ${project.name}`}
-                  onClick={() => setProjectMenuId((current) => current === project.id ? null : project.id)}
+                  aria-label={t('Options for {{name}}', { name: project.name })}
+                  onClick={(event) => {
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    setProjectMenu((current) => current?.id === project.id
+                      ? null
+                      : { id: project.id, top: bounds.bottom + 5, left: direction === 'rtl' ? bounds.left : bounds.right - 150 });
+                  }}
                 ><Ellipsis size={16} /></button>
-                {projectMenuId === project.id && (
-                  <div className="popover project-options-menu scale-in">
-                    <button onClick={() => { onRenameProject(project.id); setProjectMenuId(null); }}>Rename project</button>
-                  </div>
+                {projectMenu?.id === project.id && createPortal(
+                  <div
+                    className="popover project-options-menu project-options-portal scale-in"
+                    style={{ top: projectMenu.top, left: projectMenu.left }}
+                  >
+                    <button onClick={() => { onRenameProject(project.id); setProjectMenu(null); }}>{t('Rename project')}</button>
+                  </div>,
+                  window.document.body,
                 )}
               </div>
             </div>
           ))}
         </div>
-        <button className="new-project-button" onClick={onAddProject}><Plus size={15} /> New project</button>
+        <button className="new-project-button" onClick={onAddProject}><Plus size={15} /> {t('New project')}</button>
       </nav>
 
       <div className="sidebar-footer">
         <div className={`sync-indicator sync-${syncState}`}>
           <span className="sync-dot">{syncState === 'saving' && <span className="sync-pulse" />}</span>
-          <div>
-            <strong>{syncState === 'saving' ? 'Saving changes' : syncState === 'error' ? 'Sync needs attention' : syncState === 'local' ? 'Saved locally' : syncState === 'synced' ? 'All changes saved' : 'Ready to save'}</strong>
-            <small>{syncState === 'error' ? 'Your local work is safe' : syncState === 'local' ? 'No remote configured' : 'Git-backed workspace'}</small>
+          <div className="sync-copy">
+            <strong>{t(syncState === 'saving' ? 'Saving changes' : syncState === 'error' ? 'Sync needs attention' : syncState === 'local' ? 'Saved locally' : syncState === 'synced' ? 'All changes saved' : 'Ready to save')}</strong>
+            <small
+              className={syncState === 'error' ? 'sync-error-message' : ''}
+              title={syncState === 'error' ? t(syncError || 'Git sync failed. Check the remote and try again.') : undefined}
+            >
+              {t(syncState === 'error' ? syncError || 'Git sync failed. Check the remote and try again.' : syncState === 'local' ? 'No remote configured' : 'Git-backed workspace')}
+            </small>
+            {syncState === 'error' && (
+              <>
+                <span className="sync-reassurance">{t('Your local work is safe')}</span>
+                <div className="sync-error-actions">
+                  <button onClick={onRetrySync}><RefreshCw size={11} /> {t('Retry sync')}</button>
+                  <button onClick={onAddRemote}>{t('Credentials')}</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
-        <button className="help-button"><CircleHelp size={17} /> Help & shortcuts <kbd>?</kbd></button>
+        <button className="help-button"><CircleHelp size={17} /> {t('Help & shortcuts')} <kbd>?</kbd></button>
         <div className="profile-row">
           <span className="profile-avatar">YO</span>
-          <div><strong>Your workspace</strong><small>Private by default</small></div>
+          <div><strong>{t('Your workspace')}</strong><small>{t('Private by default')}</small></div>
           <button className="icon-button"><Settings2 size={16} /></button>
         </div>
       </div>

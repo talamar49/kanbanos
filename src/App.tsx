@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, X } from 'lucide-react';
-import kanbanosLogo from './assets/kanbanos-logo.png';
+import kanbanosLogo from './assets/kanbanos-mascot.png';
 import { ConflictDialog } from './components/ConflictDialog';
+import { FilesView } from './components/FilesView';
 import { KanbanBoard } from './components/KanbanBoard';
 import { ListView } from './components/ListView';
 import { Onboarding } from './components/Onboarding';
@@ -9,14 +10,18 @@ import { ProjectModal } from './components/ProjectModal';
 import { RemoteModal } from './components/RemoteModal';
 import { RoadmapView } from './components/RoadmapView';
 import { Sidebar } from './components/Sidebar';
+import { TaskComposerModal } from './components/TaskComposerModal';
 import { TaskModal } from './components/TaskModal';
 import { TimelineView } from './components/TimelineView';
-import type { WorkspaceAction, WorkspaceDocument, WorkspaceView } from './domain/types';
-import { createEmptyWorkspace, isWorkspaceDocument, workspaceReducer } from './domain/workspace';
+import type { TaskDraft, WorkspaceAction, WorkspaceAttachment, WorkspaceDocument, WorkspaceView } from './domain/types';
+import { createEmptyWorkspace, createWorkItem, isWorkspaceDocument, normalizeWorkspaceDocument, workspaceReducer } from './domain/workspace';
+import { useI18n } from './i18n';
 
 type BootState = 'loading' | 'onboarding' | 'ready';
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
 type Toast = { kind: 'success' | 'error'; message: string };
+
+const AttachmentPreviewModal = lazy(() => import('./components/AttachmentPreviewModal').then((module) => ({ default: module.AttachmentPreviewModal })));
 
 function LoadingScreen() {
   return (
@@ -29,14 +34,18 @@ function LoadingScreen() {
 }
 
 export default function App() {
+  const { language, t } = useI18n();
   const [bootState, setBootState] = useState<BootState>('loading');
   const [connection, setConnection] = useState<RepositoryConnection | null>(null);
   const [document, setDocument] = useState<WorkspaceDocument>(() => createEmptyWorkspace());
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
+  const [syncError, setSyncError] = useState('');
   const [activeView, setActiveView] = useState<WorkspaceView>('board');
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
-  const [projectModal, setProjectModal] = useState<{ mode: 'create' | 'edit'; projectId?: string } | null>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<WorkspaceAttachment | null>(null);
+  const [projectModal, setProjectModal] = useState<{ mode: 'create' | 'edit'; projectId?: string; targetDate?: string } | null>(null);
+  const [taskComposer, setTaskComposer] = useState<{ projectId: string; preset?: Partial<TaskDraft> } | null>(null);
   const [remoteModalOpen, setRemoteModalOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState<RepositoryConnection[]>([]);
   const [conflicts, setConflicts] = useState<GitConflict[] | null>(null);
@@ -51,20 +60,24 @@ export default function App() {
 
   const loadWorkspace = useCallback(async (nextConnection: RepositoryConnection) => {
     setConnection(nextConnection);
+    setSyncError('');
     setActiveView('board');
     const stored = window.kanbanos ? await window.kanbanos.workspace.load() : null;
     revisionRef.current = 0;
     if (isWorkspaceDocument(stored)) {
-      setDocument(stored);
+      setDocument(normalizeWorkspaceDocument(stored));
       setDirty(false);
       setSaveState('synced');
     } else {
-      setDocument(createEmptyWorkspace(nextConnection.displayName));
+      setDocument(createEmptyWorkspace(nextConnection.displayName, {
+        projectName: t('My first project'),
+        projectDescription: t('A focused space for what matters next'),
+      }));
       setDirty(true);
       setSaveState('idle');
     }
     setBootState('ready');
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const boot = async () => {
@@ -81,7 +94,7 @@ export default function App() {
       }
     };
     void boot();
-  }, [loadWorkspace]);
+  }, []);
 
   const applyAction = useCallback((action: WorkspaceAction) => {
     revisionRef.current += 1;
@@ -102,7 +115,7 @@ export default function App() {
         const unchanged = revisionRef.current === savedRevision;
         setDirty(!unchanged);
         setSaveState(unchanged ? 'synced' : 'idle');
-        notify('Workspace saved in preview mode.');
+        notify(t('Workspace saved in preview mode.'));
         return;
       }
       const result = await window.kanbanos.workspace.save(documentToSave);
@@ -111,10 +124,11 @@ export default function App() {
         setConflicts(result.conflicts ?? []);
         setDirty(!unchanged);
         setSaveState('error');
-        notify(result.message, 'error');
+        setSyncError(result.message);
+        notify(t(result.message), 'error');
         return;
       }
-      if (unchanged && isWorkspaceDocument(result.document)) setDocument(result.document);
+      if (unchanged && isWorkspaceDocument(result.document)) setDocument(normalizeWorkspaceDocument(result.document));
       setDirty(!unchanged);
       setSaveState(
         unchanged
@@ -125,14 +139,17 @@ export default function App() {
               : 'error'
           : 'idle',
       );
-      notify(result.message, result.status === 'error' ? 'error' : 'success');
+      setSyncError(result.status === 'error' ? result.message : '');
+      notify(t(result.message), result.status === 'error' ? 'error' : 'success');
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not save the workspace.';
       setSaveState(revisionRef.current === savedRevision ? 'error' : 'idle');
-      notify(error instanceof Error ? error.message : 'Could not save the workspace.', 'error');
+      setSyncError(message);
+      notify(t(message), 'error');
     } finally {
       saveInFlightRef.current = false;
     }
-  }, [document, notify]);
+  }, [document, notify, t]);
 
   useEffect(() => {
     if (bootState !== 'ready' || !connection || !dirty || saveState === 'saving') return;
@@ -153,24 +170,24 @@ export default function App() {
 
   const createLocal = async (name: string) => {
     const nextConnection = window.kanbanos
-      ? await window.kanbanos.repository.createLocal(name)
+      ? await window.kanbanos.repository.createLocal(name, language)
       : { repositoryPath: 'browser-demo', displayName: name };
     if (nextConnection) await loadWorkspace(nextConnection);
   };
 
-  const connectRemote = async (url: string) => {
+  const connectRemote = async (url: string, credentials?: GitCredentials) => {
     const nextConnection = window.kanbanos
-      ? await window.kanbanos.repository.connectRemote(url)
-      : { repositoryPath: 'browser-demo', remoteUrl: url, displayName: 'Demo workspace' };
+      ? await window.kanbanos.repository.connectRemote(url, credentials)
+      : { repositoryPath: 'browser-demo', remoteUrl: url, displayName: t('Demo workspace') };
     await loadWorkspace(nextConnection);
   };
 
   const chooseLocal = async () => {
     if (!window.kanbanos) {
-      await loadWorkspace({ repositoryPath: 'browser-demo', displayName: 'Local demo' });
+      await loadWorkspace({ repositoryPath: 'browser-demo', displayName: t('Local demo') });
       return;
     }
-    const nextConnection = await window.kanbanos.repository.chooseLocal();
+    const nextConnection = await window.kanbanos.repository.chooseLocal(language);
     if (nextConnection) await loadWorkspace(nextConnection);
   };
 
@@ -184,23 +201,25 @@ export default function App() {
     setRecentWorkspaces((current) => current.filter((workspace) => workspace.repositoryPath !== repositoryPath));
   };
 
-  const addRemote = async (url: string) => {
+  const addRemote = async (url: string, credentials?: GitCredentials) => {
     const nextConnection = window.kanbanos
-      ? await window.kanbanos.repository.addRemote(url)
+      ? await window.kanbanos.repository.addRemote(url, credentials)
       : { ...connection!, remoteUrl: url };
     setConnection(nextConnection);
     setDirty(true);
     setSaveState('idle');
-    notify('Remote added. Save when you are ready to sync this workspace.');
+    setSyncError('');
+    notify(t('Remote added. Save when you are ready to sync this workspace.'));
   };
 
   const disconnect = async () => {
-    if (!window.confirm('Disconnect this workspace? Your repository and all of its data will remain untouched.')) return;
+    if (!window.confirm(t('Disconnect this workspace? Your repository and all of its data will remain untouched.'))) return;
     await window.kanbanos?.repository.disconnect();
     setConnection(null);
     if (window.kanbanos) setRecentWorkspaces(await window.kanbanos.repository.listRecent());
     setBootState('onboarding');
     setSaveState('idle');
+    setSyncError('');
     setDirty(false);
   };
 
@@ -209,17 +228,101 @@ export default function App() {
     const result = await window.kanbanos.workspace.resolveConflicts(strategy);
     if (isWorkspaceDocument(result.document)) {
       revisionRef.current += 1;
-      setDocument(result.document);
+      setDocument(normalizeWorkspaceDocument(result.document));
     }
     if (result.status === 'synced') {
       setConflicts(null);
       setDirty(false);
       setSaveState('synced');
-      notify(result.message);
+      setSyncError('');
+      notify(t(result.message));
     } else {
       setSaveState('error');
-      notify(result.message, 'error');
+      setSyncError(result.message);
+      notify(t(result.message), 'error');
     }
+  };
+
+  const addTaskAttachments = async (itemId: string, kind: 'files' | 'folders') => {
+    const api = window.kanbanos?.attachments;
+    if (!api) {
+      notify(t('Attachments are available in the desktop app.'), 'error');
+      return;
+    }
+    try {
+      const attachments = await (kind === 'files' ? api.pickFiles(language) : api.pickFolders(language));
+      if (attachments.length === 0) return;
+      applyAction({ type: 'addAttachments', itemId, attachments });
+      notify(t(attachments.length === 1 ? 'Attachment added to the task.' : '{{count}} attachments added to the task.', { count: attachments.length }));
+    } catch (error) {
+      notify(error instanceof Error ? t(error.message) : t('Could not attach that item.'), 'error');
+    }
+  };
+
+  const openAttachment = async (attachment: WorkspaceAttachment) => {
+    try {
+      if (!window.kanbanos?.attachments) throw new Error('Attachments are available in the desktop app.');
+      await window.kanbanos.attachments.open(attachment.relativePath);
+    } catch (error) {
+      notify(error instanceof Error ? t(error.message) : t('Could not open that attachment.'), 'error');
+    }
+  };
+
+  const revealAttachment = async (attachment: WorkspaceAttachment) => {
+    try {
+      if (!window.kanbanos?.attachments) throw new Error('Attachments are available in the desktop app.');
+      await window.kanbanos.attachments.reveal(attachment.relativePath);
+    } catch (error) {
+      notify(error instanceof Error ? t(error.message) : t('Could not show that attachment.'), 'error');
+    }
+  };
+
+  const removeTaskAttachment = async (attachment: WorkspaceAttachment) => {
+    if (!window.confirm(t('Remove “{{name}}” from this task and delete its stored copy?', { name: attachment.name }))) return;
+    try {
+      await window.kanbanos?.attachments.remove(attachment.id);
+      applyAction({ type: 'removeAttachment', attachmentId: attachment.id });
+      notify(t('Attachment removed.'));
+    } catch (error) {
+      notify(error instanceof Error ? t(error.message) : t('Could not remove that attachment.'), 'error');
+    }
+  };
+
+  const deleteTask = async (item: WorkspaceDocument['items'][string]): Promise<boolean> => {
+    try {
+      const attachmentIds = item.attachmentIds ?? [];
+      if (window.kanbanos?.attachments && attachmentIds.length > 0) {
+        const results = await Promise.allSettled(attachmentIds.map((attachmentId) => window.kanbanos!.attachments.remove(attachmentId)));
+        const removedIds = attachmentIds.filter((_, index) => results[index].status === 'fulfilled');
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+        if (failure) {
+          removedIds.forEach((attachmentId) => applyAction({ type: 'removeAttachment', attachmentId }));
+          throw failure.reason;
+        }
+      }
+      applyAction({ type: 'deleteItem', itemId: item.id });
+      return true;
+    } catch (error) {
+      notify(error instanceof Error ? t(error.message) : t('Could not delete the task attachments.'), 'error');
+      return false;
+    }
+  };
+
+  const openTaskComposer = (projectId: string, preset?: Partial<TaskDraft>) => {
+    setTaskComposer({ projectId, preset });
+  };
+
+  const createTaskFromDraft = (draft: TaskDraft) => {
+    if (!taskComposer) return;
+    const projectItems = Object.values(document.items).filter((item) => item.projectId === taskComposer.projectId);
+    const rank = Math.max(0, ...projectItems.map((item) => item.moduleData.kanban.rank)) + 1000;
+    const task = createWorkItem(taskComposer.projectId, draft.columnId, draft.title, rank, draft);
+    if (document.preferences.activeProjectId !== taskComposer.projectId) {
+      applyAction({ type: 'selectProject', projectId: taskComposer.projectId });
+    }
+    applyAction({ type: 'addItem', item: task });
+    setTaskComposer(null);
+    setOpenTaskId(task.id);
   };
 
   const activeProject = useMemo(() => {
@@ -227,6 +330,18 @@ export default function App() {
       ?? document.projects[0];
   }, [document.preferences.activeProjectId, document.projects]);
   const openTask = openTaskId ? document.items[openTaskId] : undefined;
+
+  useEffect(() => {
+    const handleQuickCapture = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!activeProject || event.key.toLowerCase() !== 'c' || event.ctrlKey || event.metaKey || event.altKey || target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      event.preventDefault();
+      const columns = document.modules.kanban.projects[activeProject.id]?.columns ?? [];
+      openTaskComposer(activeProject.id, { columnId: columns.find((column) => column.id === 'planned')?.id ?? columns[0]?.id });
+    };
+    window.addEventListener('keydown', handleQuickCapture);
+    return () => window.removeEventListener('keydown', handleQuickCapture);
+  }, [activeProject, document.modules.kanban.projects]);
 
   if (bootState === 'loading') return <LoadingScreen />;
   if (bootState === 'onboarding' || !connection) {
@@ -255,6 +370,7 @@ export default function App() {
         activeProject={activeProject}
         repositoryName={connection.displayName}
         syncState={saveState}
+        syncError={syncError}
         activeView={activeView}
         onChangeView={setActiveView}
         onSelectProject={(projectId) => applyAction({ type: 'selectProject', projectId })}
@@ -262,6 +378,7 @@ export default function App() {
         onRenameProject={(projectId) => setProjectModal({ mode: 'edit', projectId })}
         hasRemote={Boolean(connection.remoteUrl)}
         onAddRemote={() => setRemoteModalOpen(true)}
+        onRetrySync={() => void save()}
         onRevealRepository={() => void window.kanbanos?.repository.reveal()}
         onDisconnect={() => void disconnect()}
       />
@@ -286,6 +403,7 @@ export default function App() {
           dirty={dirty}
           onAction={applyAction}
           onOpenTask={(item) => setOpenTaskId(item.id)}
+          onCreateTask={(preset) => openTaskComposer(activeProject.id, preset)}
           onSave={() => void save()}
           onChangeView={setActiveView}
           onEditProject={() => setProjectModal({ mode: 'edit', projectId: activeProject.id })}
@@ -298,6 +416,8 @@ export default function App() {
           saveState={saveState}
           dirty={dirty}
           onOpenTask={(item) => setOpenTaskId(item.id)}
+          onCreateTask={(preset) => openTaskComposer(activeProject.id, preset)}
+          onAction={applyAction}
           onSave={() => void save()}
           onEditProject={() => setProjectModal({ mode: 'edit', projectId: activeProject.id })}
         />
@@ -308,22 +428,68 @@ export default function App() {
           saveState={saveState}
           dirty={dirty}
           onSave={() => void save()}
-          onAddProject={() => setProjectModal({ mode: 'create' })}
+          onAddProject={(targetDate) => setProjectModal({ mode: 'create', targetDate })}
+          onAddTask={(projectId, preset) => openTaskComposer(projectId, preset)}
           onEditProject={(projectId) => setProjectModal({ mode: 'edit', projectId })}
+          onMoveProject={(projectId, targetDate) => applyAction({ type: 'updateProject', projectId, changes: { targetDate } })}
+          onOpenTask={(item) => setOpenTaskId(item.id)}
           onOpenProject={(projectId) => {
             applyAction({ type: 'selectProject', projectId });
             setActiveView('board');
           }}
         />
       )}
+      {activeView === 'files' && (
+        <FilesView
+          document={document}
+          saveState={saveState}
+          dirty={dirty}
+          onSave={() => void save()}
+          onOpenTask={(item) => setOpenTaskId(item.id)}
+          onPreviewAttachment={setPreviewAttachment}
+          onOpenAttachment={(attachment) => void openAttachment(attachment)}
+          onRevealAttachment={(attachment) => void revealAttachment(attachment)}
+        />
+      )}
 
+      {taskComposer && (() => {
+        const taskProject = document.projects.find((project) => project.id === taskComposer.projectId);
+        const taskColumns = document.modules.kanban.projects[taskComposer.projectId]?.columns ?? [];
+        return taskProject ? (
+          <TaskComposerModal
+            project={taskProject}
+            columns={taskColumns}
+            preset={taskComposer.preset}
+            onCreate={createTaskFromDraft}
+            onClose={() => setTaskComposer(null)}
+          />
+        ) : null;
+      })()}
       {openTask && (
         <TaskModal
           item={openTask}
           columns={document.modules.kanban.projects[openTask.projectId]?.columns ?? []}
+          projectTasks={Object.values(document.items).filter((item) => item.projectId === openTask.projectId)}
+          attachments={(openTask.attachmentIds ?? []).map((attachmentId) => document.resources.attachments[attachmentId]).filter(Boolean)}
           onAction={applyAction}
+          onAddAttachments={(kind) => addTaskAttachments(openTask.id, kind)}
+          onPreviewAttachment={setPreviewAttachment}
+          onOpenAttachment={(attachment) => void openAttachment(attachment)}
+          onRevealAttachment={(attachment) => void revealAttachment(attachment)}
+          onRemoveAttachment={removeTaskAttachment}
+          onDelete={() => deleteTask(openTask)}
           onClose={() => setOpenTaskId(null)}
         />
+      )}
+      {previewAttachment && (
+        <Suspense fallback={<div className="modal-backdrop attachment-preview-backdrop"><div className="preview-loading-card"><span className="spinner spinner-dark" /> {t('Preparing preview…')}</div></div>}>
+          <AttachmentPreviewModal
+            attachment={previewAttachment}
+            onClose={() => setPreviewAttachment(null)}
+            onOpen={(attachment) => void openAttachment(attachment)}
+            onReveal={(attachment) => void revealAttachment(attachment)}
+          />
+        </Suspense>
       )}
       {remoteModalOpen && (
         <RemoteModal
@@ -337,6 +503,7 @@ export default function App() {
           project={projectModal.mode === 'edit'
             ? document.projects.find((project) => project.id === projectModal.projectId)
             : undefined}
+          initialTargetDate={projectModal.targetDate}
           onAction={applyAction}
           onClose={() => setProjectModal(null)}
         />
