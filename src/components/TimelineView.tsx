@@ -47,6 +47,7 @@ type Props = {
   onAction: (action: WorkspaceAction) => void;
   onSave: () => void;
   onEditProject: () => void;
+  mobile?: boolean;
 };
 
 type ScheduledTask = { item: WorkItem; start: Date; due: Date; startIndex: number; endIndex: number; endClipped: boolean };
@@ -54,7 +55,7 @@ type TimelineDisplayRow = { id: string; entries: ScheduledTask[]; compact?: bool
 type TimelineRowLayout = ScheduledTask & { rowId: string; top: number; height: number; center: number; left: number; right: number };
 type DependencyRope = { startX: number; startY: number; endX: number; endY: number; attached: boolean };
 type ResizePreview = { taskId: string; dueDate: string; deltaPx: number };
-type TimelineZoom = 'two-weeks' | 'four-weeks' | 'year';
+type TimelineZoom = 'week' | 'month' | 'two-weeks' | 'four-weeks' | 'year';
 type TimelineMonthSegment = { id: string; date: Date; startIndex: number; dayCount: number };
 type TimelineYearMonthLayout = { segment: TimelineMonthSegment; days: Date[]; rows: TimelineDisplayRow[] };
 type Point = { x: number; y: number };
@@ -125,7 +126,8 @@ function startOfWindow(offset: number, zoom: TimelineZoom): Date {
   const date = new Date();
   date.setHours(12, 0, 0, 0);
   if (zoom === 'year') return new Date(date.getFullYear() + offset, 0, 1, 12);
-  const span = zoom === 'two-weeks' ? 14 : 28;
+  if (zoom === 'month') return new Date(date.getFullYear(), date.getMonth() + offset, 1, 12);
+  const span = zoom === 'week' ? 7 : zoom === 'two-weeks' ? 14 : 28;
   const mondayOffset = (date.getDay() + 6) % 7;
   date.setDate(date.getDate() - mondayOffset + offset * span);
   return date;
@@ -144,8 +146,10 @@ function calendarDayDistance(later: Date, earlier: Date): number {
 }
 
 function spanForWindow(rangeStart: Date, zoom: TimelineZoom): number {
-  if (zoom !== 'year') return zoom === 'two-weeks' ? 14 : 28;
-  return calendarDayDistance(new Date(rangeStart.getFullYear() + 1, 0, 1, 12), rangeStart);
+  if (zoom === 'year') return calendarDayDistance(new Date(rangeStart.getFullYear() + 1, 0, 1, 12), rangeStart);
+  if (zoom === 'month') return calendarDayDistance(new Date(rangeStart.getFullYear(), rangeStart.getMonth() + 1, 1, 12), rangeStart);
+  if (zoom === 'week') return 7;
+  return zoom === 'two-weeks' ? 14 : 28;
 }
 
 function monthSegmentsForDays(days: Date[]): TimelineMonthSegment[] {
@@ -488,10 +492,10 @@ function UnscheduledDropArea({ canDrop, children }: { canDrop: boolean; children
   );
 }
 
-export function TimelineView({ document, project, saveState, dirty, onOpenTask, onCreateTask, onAction, onSave, onEditProject }: Props) {
+export function TimelineView({ document, project, saveState, dirty, onOpenTask, onCreateTask, onAction, onSave, onEditProject, mobile = false }: Props) {
   const { direction, locale, t } = useI18n();
   const [windowOffset, setWindowOffset] = useState(0);
-  const [zoom, setZoom] = useState<TimelineZoom>('two-weeks');
+  const [zoom, setZoom] = useState<TimelineZoom>(mobile ? 'week' : 'two-weeks');
   const layoutMode = document.preferences.timelineLayout ?? 'tasks';
   const setLayoutMode = (layout: TimelineLayout) => onAction({ type: 'setTimelineLayout', layout });
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -508,16 +512,21 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
   const [scope, setScope] = useState<ProjectScope>('current');
   const timelineRowsRef = useRef<HTMLDivElement>(null);
+  const chartScrollRef = useRef<HTMLDivElement>(null);
   const resizeStartWidthRef = useRef(0);
 
   useEffect(() => { setScope('current'); setReorderMode(false); }, [project.id]);
+  useLayoutEffect(() => {
+    if (!mobile) return;
+    if (chartScrollRef.current) chartScrollRef.current.scrollLeft = 0;
+  }, [mobile, windowOffset, zoom]);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const rangeStart = startOfWindow(windowOffset, zoom);
   const span = spanForWindow(rangeStart, zoom);
   const days = Array.from({ length: span }, (_, index) => dateAt(rangeStart, index));
   const rangeEnd = days[days.length - 1];
   const isYearView = zoom === 'year';
-  const dayWidth = zoom === 'two-weeks' ? 72 : zoom === 'four-weeks' ? 58 : 8;
+  const dayWidth = zoom === 'week' ? 82 : zoom === 'two-weeks' ? 72 : zoom === 'month' || zoom === 'four-weeks' ? 58 : 8;
   const minimumRowHeight = isYearView ? YEAR_ROW_HEIGHT : MIN_ROW_HEIGHT;
   const gridTemplateColumns = `repeat(${span}, minmax(${dayWidth}px, 1fr))`;
   const monthSegments = isYearView ? monthSegmentsForDays(days) : [];
@@ -927,8 +936,12 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
     dueDate: iso(day),
   });
 
+  const zoomOptions: Array<{ value: TimelineZoom; label: string }> = mobile
+    ? [{ value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }, { value: 'year', label: 'Year' }]
+    : [{ value: 'two-weeks', label: '2 weeks' }, { value: 'four-weeks', label: '4 weeks' }, { value: 'year', label: 'Year' }];
+
   return (
-    <main className="workspace-main timeline-view page-enter">
+    <main className={`workspace-main timeline-view page-enter ${mobile ? 'mobile-timeline-view' : ''}`}>
       <header className="board-topbar">
         <div className="breadcrumbs"><span>{t('Projects')}</span><b>/</b><strong>{showAllProjects ? t('All projects') : project.name}</strong><b>/</b><span>{t('Timeline')}</span></div>
         <div className="topbar-actions">
@@ -948,9 +961,9 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
         <div className="timeline-heading-actions">
           <ProjectScopeSelect project={project} value={scope} onChange={setScope} />
           <div className="timeline-zoom-toggle">
-            <button className={zoom === 'two-weeks' ? 'active' : ''} onClick={() => { setZoom('two-weeks'); setWindowOffset(0); }}>{t('2 weeks')}</button>
-            <button className={zoom === 'four-weeks' ? 'active' : ''} onClick={() => { setZoom('four-weeks'); setWindowOffset(0); }}>{t('4 weeks')}</button>
-            <button className={zoom === 'year' ? 'active' : ''} onClick={() => { setZoom('year'); setWindowOffset(0); }}>{t('Year')}</button>
+            {zoomOptions.map(({ value, label }) => (
+              <button key={value} className={zoom === value ? 'active' : ''} onClick={() => { setZoom(value); setWindowOffset(0); }}>{t(label)}</button>
+            ))}
           </div>
           <div className="timeline-controls">
             <button className="icon-button" onClick={() => setWindowOffset((value) => value - 1)} aria-label={t('Previous range')}><ChevronLeft size={19} /></button>
@@ -1056,6 +1069,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
               })}
             </div>
           ) : (
+          <div className="timeline-chart-scroll" ref={chartScrollRef}>
           <div className={`timeline-chart layout-${layoutMode} ${draggedTaskId ? 'is-dragging' : ''} ${resizingTaskId ? 'is-resizing' : ''} ${reorderMode ? 'is-reorder-mode' : ''}`} style={{ '--timeline-day-count': span, '--timeline-day-width': `${dayWidth}px` } as CSSProperties}>
             <div className="timeline-calendar-header">
               <div className="timeline-days" style={{ gridTemplateColumns }}>
@@ -1131,6 +1145,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                 {days.map((day) => <button key={iso(day)} onClick={() => createForDay(day)} title={t('Add task on {{date}}', { date: day.toLocaleDateString(locale) })}><Plus size={16} /><span>{t('Add')}</span></button>)}
               </div>
             </div>
+          </div>
           </div>
           )}
 

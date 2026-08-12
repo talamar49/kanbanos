@@ -12,8 +12,8 @@ function dateKey(value: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-describe('mobile timeline agenda', () => {
-  it('keeps a week of work reachable without a horizontal Gantt chart and creates tasks on the selected day', async () => {
+describe('mobile timeline', () => {
+  it('keeps the full timeline available on phones and routes task interactions', async () => {
     const user = userEvent.setup();
     const workspace = createEmptyWorkspace('Phone plan');
     const project = workspace.projects[0];
@@ -23,6 +23,7 @@ describe('mobile timeline agenda', () => {
     workspace.items = { [scheduled.id]: scheduled, [unscheduled.id]: unscheduled };
     const onCreateTask = vi.fn();
     const onOpenTask = vi.fn();
+    const onAction = vi.fn();
 
     renderWithPreferences(
       <MobileTimelineView
@@ -32,26 +33,53 @@ describe('mobile timeline agenda', () => {
         dirty={false}
         onCreateTask={onCreateTask}
         onOpenTask={onOpenTask}
+        onAction={onAction}
         onSave={vi.fn()}
+        onEditProject={vi.fn()}
       />,
     );
 
-    expect(screen.getByRole('heading', { name: /Week of/ })).toBeInTheDocument();
-    expect(screen.getAllByRole('tab')).toHaveLength(7);
-    expect(document.querySelector('.timeline-chart')).not.toBeInTheDocument();
-    expect(document.querySelector('.mobile-week-picker')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Timeline' })).toBeInTheDocument();
+    expect(document.querySelector('.mobile-timeline-view .timeline-chart')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Week' })).toBeInTheDocument();
+    const chartScroll = document.querySelector<HTMLElement>('.mobile-timeline-view .timeline-chart-scroll')!;
+    chartScroll.scrollLeft = 120;
+    await user.click(screen.getByRole('button', { name: 'Month' }));
+    expect(screen.getByRole('button', { name: 'Month' })).toHaveClass('active');
+    expect(chartScroll.scrollLeft).toBe(0);
+    await user.click(screen.getByRole('button', { name: 'Year' }));
+    expect(document.querySelector('.timeline-year-board')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Week' }));
 
     await user.click(screen.getByText('Ship mobile QA'));
     expect(onOpenTask).toHaveBeenCalledWith(scheduled);
-    await user.click(screen.getByRole('button', { name: 'New task' }));
-    expect(onCreateTask).toHaveBeenCalledWith(expect.objectContaining({
-      columnId: 'planned',
-      startDate: today,
-      dueDate: today,
-    }));
+    await user.click(screen.getByRole('button', { name: 'Compact lanes' }));
+    expect(onAction).toHaveBeenCalledWith({ type: 'setTimelineLayout', layout: 'compact' });
 
     const unscheduledSection = screen.getByText('Unscheduled work').closest('section')!;
     await user.click(within(unscheduledSection).getByText('Gather feedback'));
     expect(onOpenTask).toHaveBeenCalledWith(unscheduled);
+  });
+
+  it('keeps empty-range guidance inside the contained timeline chart', () => {
+    const workspace = createEmptyWorkspace('Empty phone plan');
+    const project = workspace.projects[0];
+    renderWithPreferences(
+      <MobileTimelineView
+        document={workspace}
+        project={project}
+        saveState="synced"
+        dirty={false}
+        onCreateTask={vi.fn()}
+        onOpenTask={vi.fn()}
+        onAction={vi.fn()}
+        onSave={vi.fn()}
+        onEditProject={vi.fn()}
+      />,
+    );
+
+    const chartScroll = document.querySelector('.mobile-timeline-view .timeline-chart-scroll')!;
+    expect(chartScroll).toContainElement(document.querySelector('.timeline-empty'));
+    expect(screen.getByRole('button', { name: 'Schedule a task' })).toBeInTheDocument();
   });
 });

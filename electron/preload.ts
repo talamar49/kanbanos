@@ -6,6 +6,12 @@ contextBridge.exposeInMainWorld('kanbanos', {
   appearance: {
     setTheme: (theme: 'light' | 'dark') => ipcRenderer.send('appearance:set-theme', theme),
   },
+  diagnostics: {
+    list: () => ipcRenderer.invoke('diagnostics:list'),
+    record: (entry: { level?: 'info' | 'error'; scope?: string; message?: string; details?: string }) => ipcRenderer.invoke('diagnostics:record', entry),
+    clear: () => ipcRenderer.invoke('diagnostics:clear'),
+    export: (language: 'en' | 'he' = 'en') => ipcRenderer.invoke('diagnostics:export', language),
+  },
   repository: {
     status: () => ipcRenderer.invoke('repository:status'),
     listRecent: () => ipcRenderer.invoke('repository:list-recent'),
@@ -35,6 +41,7 @@ contextBridge.exposeInMainWorld('kanbanos', {
   workspace: {
     load: () => ipcRenderer.invoke('workspace:load'),
     save: (document: unknown) => ipcRenderer.invoke('workspace:save', document),
+    sync: () => ipcRenderer.invoke('workspace:sync'),
     resolveConflicts: (strategy: 'local' | 'remote') =>
       ipcRenderer.invoke('workspace:resolve-conflicts', strategy),
   },

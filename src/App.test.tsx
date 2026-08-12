@@ -1,20 +1,28 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { createEmptyWorkspace, createWorkItem } from './domain/workspace';
 import { PreferencesProvider } from './i18n';
 
 function desktopApi(options: {
   stored?: unknown;
+  loadResult?: WorkspaceLoadResult;
   recent?: RepositoryConnection[];
   connection?: RepositoryConnection;
   saveResult?: SaveResult;
+  syncResult?: SaveResult;
   attachments?: ImportedAttachment[];
 } = {}) {
   const connection: RepositoryConnection = options.connection ?? { repositoryPath: '/work/demo', displayName: 'Demo workspace' };
   const api = {
     appearance: { setTheme: vi.fn() },
+    diagnostics: {
+      list: vi.fn().mockResolvedValue([]),
+      record: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn().mockResolvedValue(undefined),
+      export: vi.fn().mockResolvedValue('/tmp/kanbanos-diagnostics.log'),
+    },
     repository: {
       status: vi.fn().mockResolvedValue(connection),
       listRecent: vi.fn().mockResolvedValue(options.recent ?? []),
@@ -39,11 +47,16 @@ function desktopApi(options: {
       remove: vi.fn().mockResolvedValue(undefined),
     },
     workspace: {
-      load: vi.fn().mockResolvedValue(options.stored ?? null),
+      load: vi.fn().mockResolvedValue(options.loadResult ?? { document: options.stored ?? null }),
       save: vi.fn().mockImplementation(async (document: unknown) => options.saveResult ?? ({
         status: 'local-only',
         message: 'Saved to the local Git repository.',
         document,
+      })),
+      sync: vi.fn().mockImplementation(async () => options.syncResult ?? ({
+        status: 'synced',
+        message: 'Everything is saved and in sync.',
+        document: options.stored,
       })),
       resolveConflicts: vi.fn().mockImplementation(async () => ({
         status: 'synced',
@@ -61,6 +74,19 @@ function renderApp() {
 }
 
 describe('Kanbanos app integration', () => {
+  beforeEach(() => {
+    vi.mocked(window.matchMedia).mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  });
+
   it('provides compact navigation and a mobile drawer without changing desktop workflows', async () => {
     const user = userEvent.setup();
     vi.mocked(window.matchMedia).mockReturnValue({
@@ -82,8 +108,11 @@ describe('Kanbanos app integration', () => {
     await user.click(screen.getByRole('button', { name: 'Choose location' }));
 
     const mobileNavigation = await screen.findByRole('navigation', { name: 'Mobile navigation' });
+    const mobileAppBar = document.querySelector<HTMLElement>('.mobile-app-bar')!;
     expect(document.documentElement).toHaveClass('compact-layout');
     expect(within(mobileNavigation).getByRole('button', { name: 'Work' })).toHaveAttribute('aria-current', 'page');
+    expect(within(mobileAppBar).getByRole('button', { name: 'Save now' })).toBeInTheDocument();
+    await waitFor(() => expect(within(mobileAppBar).getByRole('button', { name: 'Saved locally' })).toBeInTheDocument());
 
     await user.click(screen.getByRole('button', { name: 'Open navigation' }));
     expect(document.querySelector('.sidebar')).toHaveClass('mobile-open');
@@ -91,9 +120,11 @@ describe('Kanbanos app integration', () => {
     expect(document.querySelector('.sidebar')).not.toHaveClass('mobile-open');
 
     await user.click(within(mobileNavigation).getByRole('button', { name: 'Timeline' }));
-    expect(await screen.findByRole('heading', { name: /Week of/ })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Timeline' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Week' })).toBeInTheDocument();
     expect(document.querySelector('.mobile-timeline-view')).toBeInTheDocument();
-    expect(document.querySelector('.timeline-chart')).not.toBeInTheDocument();
+    expect(document.querySelector('.timeline-chart')).toBeInTheDocument();
+    expect(screen.getByText('Unscheduled work')).toBeInTheDocument();
   });
 
   it('opens a reliable task composer from the compact board and persists the created task', async () => {
@@ -120,10 +151,10 @@ describe('Kanbanos app integration', () => {
     await user.type(screen.getByLabelText('What needs to happen?'), 'Create from Android board');
     await user.click(screen.getByRole('button', { name: 'Create task' }));
 
-    expect(await screen.findByRole('dialog', { name: 'Task details' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Close task' }));
-    expect(screen.getByText('Create from Android board')).toBeInTheDocument();
+    expect(await screen.findByText('Create from Android board')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Task details' })).not.toBeInTheDocument();
     await waitFor(() => expect(api.workspace.save).toHaveBeenCalled());
+    expect(screen.queryByText('Saved to the local Git repository.')).not.toBeInTheDocument();
   });
 
   it('creates a workspace, captures a task, and persists it through the desktop bridge', async () => {
@@ -193,6 +224,45 @@ describe('Kanbanos app integration', () => {
     expect(api.attachments.reveal).toHaveBeenCalledWith(imported.relativePath);
   });
 
+  it('recovers an invalid workspace into its last saved version and tells the user where the backup is', async () => {
+    const user = userEvent.setup();
+    const restored = createEmptyWorkspace('Restored workspace');
+    const recent = [{ repositoryPath: '/work/recovery', displayName: 'Recovery workspace' }];
+    desktopApi({
+      recent,
+      loadResult: {
+        document: restored,
+        recovery: { restored: true, backupPath: '.kanbanos/recovery/workspace-2027-01-01.json' },
+      },
+    });
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click((await screen.findByText('Recovery workspace')).closest('.recent-workspace-main')!);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('restored your last saved version');
+    expect(screen.getByRole('alert')).toHaveTextContent('.kanbanos/recovery/workspace-2027-01-01.json');
+  });
+
+  it('starts a fresh workspace and keeps the damaged backup when no valid version exists', async () => {
+    const user = userEvent.setup();
+    const recent = [{ repositoryPath: '/work/new-recovery', displayName: 'New recovery workspace' }];
+    desktopApi({
+      recent,
+      loadResult: {
+        document: null,
+        recovery: { restored: false, backupPath: '.kanbanos/recovery/workspace-2027-01-02.json' },
+      },
+    });
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click((await screen.findByText('New recovery workspace')).closest('.recent-workspace-main')!);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('a new workspace was started');
+    expect(screen.getByRole('alert')).toHaveTextContent('.kanbanos/recovery/workspace-2027-01-02.json');
+  });
+
   it('opens a local file reference without trying to preview or sync its source file', async () => {
     const user = userEvent.setup();
     const stored = createEmptyWorkspace('Reference workspace');
@@ -244,7 +314,7 @@ describe('Kanbanos app integration', () => {
       stored,
       connection,
       recent: [connection],
-      saveResult: {
+      syncResult: {
         status: 'synced',
         message: 'Everything is saved and in sync.',
         document: remoteDocument,
@@ -255,9 +325,7 @@ describe('Kanbanos app integration', () => {
 
     await user.click((await screen.findByText('Remote workspace')).closest('.recent-workspace-main')!);
 
-    await waitFor(() => expect(api.workspace.save).toHaveBeenCalledWith(expect.objectContaining({
-      workspace: expect.objectContaining({ name: 'Stale local workspace' }),
-    })));
+    await waitFor(() => expect(api.workspace.sync).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('Task fetched from remote')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Saved' })).toBeDisabled();
   });

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceDocument } from '../domain/types';
 import {
+  createCanvasNode,
   createCanvasProject,
   createEmptyWorkspace,
   createProject,
@@ -14,6 +15,7 @@ import { CanvasView } from './CanvasView';
 import { FilesView } from './FilesView';
 import { KanbanBoard } from './KanbanBoard';
 import { ListView } from './ListView';
+import { MobileNavigation } from './MobileNavigation';
 import { RoadmapView } from './RoadmapView';
 import { Sidebar } from './Sidebar';
 import { TimelineView } from './TimelineView';
@@ -104,7 +106,43 @@ async function stopMouseDrag(target: Element) {
   await new Promise((resolve) => window.setTimeout(resolve, 60));
 }
 
+function fireTouchPointer(target: Element, type: string, pointerId: number, clientX: number, clientY: number) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    pointerId: { value: pointerId },
+    pointerType: { value: 'touch' },
+    clientX: { value: clientX },
+    clientY: { value: clientY },
+    button: { value: 0 },
+    buttons: { value: type === 'pointerup' ? 0 : 1 },
+  });
+  fireEvent(target, event);
+}
+
 describe('workspace navigation', () => {
+  it('keeps a mobile save error visible and retryable', async () => {
+    const user = userEvent.setup();
+    const document = featureWorkspace();
+    const onSave = vi.fn();
+    renderWithPreferences(
+      <MobileNavigation
+        activeView="board"
+        activeProject={document.projects[0]}
+        menuOpen={false}
+        saveState="error"
+        dirty={false}
+        onOpenMenu={vi.fn()}
+        onSave={onSave}
+        onChangeView={vi.fn()}
+      />,
+    );
+
+    const retry = screen.getByRole('button', { name: 'Sync needs attention' });
+    expect(retry).not.toBeDisabled();
+    await user.click(retry);
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
   it('navigates views, projects, and workspace actions from the sidebar', async () => {
     const user = userEvent.setup();
     const document = featureWorkspace();
@@ -116,6 +154,7 @@ describe('workspace navigation', () => {
       onAddRemote: vi.fn(),
       onRetrySync: vi.fn(),
       onRevealRepository: vi.fn(),
+      onOpenDiagnostics: vi.fn(),
       onDisconnect: vi.fn(),
     };
     renderWithPreferences(
@@ -146,6 +185,9 @@ describe('workspace navigation', () => {
     await user.click(screen.getByRole('button', { name: /Local repo/ }));
     await user.click(screen.getByRole('button', { name: 'Add remote repository' }));
     expect(callbacks.onAddRemote).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: /Local repo/ }));
+    await user.click(screen.getByRole('button', { name: 'Diagnostics & logs' }));
+    expect(callbacks.onOpenDiagnostics).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole('button', { name: /Retry sync/ }));
     expect(callbacks.onRetrySync).toHaveBeenCalledTimes(1);
   });
@@ -220,6 +262,41 @@ describe('board and list task management', () => {
       projectId: document.projects[0].id,
       column: expect.objectContaining({ title: 'Review' }),
     }));
+  });
+
+  it('keeps mobile board controls compact and can switch to horizontal columns', async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: true,
+      media: '(max-width: 900px)',
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    const document = featureWorkspace();
+    renderWithPreferences(
+      <KanbanBoard
+        document={document}
+        project={document.projects[0]}
+        saveState="idle"
+        dirty
+        onChangeView={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+
+    const toolbar = window.document.querySelector<HTMLElement>('.board-toolbar')!;
+    expect(within(toolbar).getByPlaceholderText('Search this project')).toBeInTheDocument();
+    expect(within(toolbar).getByRole('button', { name: 'Mission scope' })).toBeInTheDocument();
+    expect(within(toolbar).getByRole('button', { name: 'Filter' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Show columns horizontally' }));
+    expect(window.document.querySelector('.workspace-main')).toHaveClass('mobile-board-horizontal');
+    await user.click(screen.getByRole('button', { name: 'Stack columns vertically' }));
+    expect(window.document.querySelector('.workspace-main')).not.toHaveClass('mobile-board-horizontal');
   });
 
   it('searches list content, opens tasks, toggles completion, and presets new tasks', async () => {
@@ -376,6 +453,44 @@ describe('timeline, roadmap, canvas, and files', () => {
     await user.click(screen.getByRole('button', { name: 'Add file' }));
     await user.click(screen.getByRole('button', { name: /Import files/ }));
     expect(onAddFiles).toHaveBeenCalledWith(expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }), 'files');
+  });
+
+  it('pinches the mobile canvas and keeps selected-object actions onscreen', () => {
+    const workspace = featureWorkspace();
+    const project = workspace.projects[0];
+    const note = createCanvasNode('note', { x: 120, y: 110 }, { content: 'Pinch me' });
+    workspace.modules.canvas.projects[project.id].nodes[note.id] = note;
+    renderWithPreferences(
+      <CanvasView
+        mobile
+        nativeMobile={false}
+        document={workspace}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        onAction={vi.fn()}
+        onSave={vi.fn()}
+        onOpenTask={vi.fn()}
+        onCreateTask={vi.fn()}
+        onAddFiles={vi.fn()}
+        onPreviewAttachment={vi.fn()}
+        onOpenAttachment={vi.fn()}
+      />,
+    );
+
+    const stage = window.document.querySelector<HTMLElement>('.canvas-stage')!;
+    vi.spyOn(stage, 'getBoundingClientRect').mockReturnValue(elementRect(0, 0, 360, 620));
+    fireEvent.pointerDown(screen.getByLabelText('Note object'), { button: 0, pointerId: 3, clientX: 150, clientY: 140 });
+    expect(screen.getByRole('toolbar', { name: 'Selected object actions' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add file' }));
+    expect(screen.getByText('Add local file reference')).toBeInTheDocument();
+
+    fireTouchPointer(stage, 'pointerdown', 1, 110, 200);
+    fireTouchPointer(stage, 'pointerdown', 2, 210, 200);
+    fireTouchPointer(stage, 'pointermove', 2, 280, 200);
+    expect(screen.getByTitle('Reset zoom')).toHaveTextContent('170%');
+    fireTouchPointer(stage, 'pointerup', 1, 110, 200);
+    fireTouchPointer(stage, 'pointerup', 2, 280, 200);
   });
 
   it('searches workspace files and delegates preview, open, reveal, and task navigation', async () => {

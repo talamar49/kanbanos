@@ -74,6 +74,7 @@ type CanvasTool = 'select' | 'pen';
 type LibraryPanel = 'tasks' | 'files' | 'shapes' | 'diagrams' | null;
 type NodePreview = Record<string, Pick<CanvasNode, 'x' | 'y'>>;
 type ResizePreview = { nodeId: string; width: number; height: number } | null;
+type PinchGesture = { distance: number; midpoint: CanvasPoint; viewport: CanvasViewport };
 
 type Gesture =
   | { type: 'pan'; pointerId: number; start: CanvasPoint; viewport: CanvasViewport }
@@ -95,7 +96,10 @@ type Props = {
   onAddFiles: (point: CanvasPoint, kind: 'files' | 'folders' | 'references') => void;
   onPreviewAttachment: (attachment: WorkspaceAttachment) => void;
   onOpenAttachment: (attachment: WorkspaceAttachment) => void;
+  /** Use compact touch controls and selected-node actions. */
   mobile?: boolean;
+  /** Hide desktop-only file references when running inside a native app. */
+  nativeMobile?: boolean;
 };
 
 const MIN_ZOOM = 0.2;
@@ -521,6 +525,7 @@ export function CanvasView({
   onPreviewAttachment,
   onOpenAttachment,
   mobile = false,
+  nativeMobile = false,
 }: Props) {
   const { locale, t } = useI18n();
   const canvasProject = document.modules.canvas.projects[project.id] ?? EMPTY_CANVAS;
@@ -549,6 +554,8 @@ export function CanvasView({
   const gestureRef = useRef<Gesture | null>(null);
   const viewportRef = useRef(viewport);
   const selectedRef = useRef(selectedNodeIds);
+  const touchPointsRef = useRef(new Map<number, CanvasPoint>());
+  const pinchRef = useRef<PinchGesture | null>(null);
 
   viewportRef.current = viewport;
   selectedRef.current = selectedNodeIds;
@@ -604,6 +611,63 @@ export function CanvasView({
       x: ((clientX - (bounds?.left ?? 0)) - current.x) / current.zoom,
       y: ((clientY - (bounds?.top ?? 0)) - current.y) / current.zoom,
     };
+  };
+
+  const stagePoint = (clientX: number, clientY: number): CanvasPoint => {
+    const bounds = stageRef.current?.getBoundingClientRect();
+    return { x: clientX - (bounds?.left ?? 0), y: clientY - (bounds?.top ?? 0) };
+  };
+
+  const startPinch = () => {
+    const points = Array.from(touchPointsRef.current.values());
+    if (points.length < 2) return;
+    const [first, second] = points;
+    pinchRef.current = {
+      distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+      midpoint: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
+      viewport: viewportRef.current,
+    };
+    gestureRef.current = null;
+    setNodePreview({});
+    setResizePreview(null);
+    setSelectionBox(null);
+    setLiveStroke(null);
+  };
+
+  const handleTouchPointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== 'touch') return;
+    touchPointsRef.current.set(event.pointerId, stagePoint(event.clientX, event.clientY));
+    if (touchPointsRef.current.size >= 2) {
+      event.preventDefault();
+      startPinch();
+      try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Some WebViews already own this pointer. */ }
+    }
+  };
+
+  const handleTouchPointerMoveCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!touchPointsRef.current.has(event.pointerId)) return;
+    touchPointsRef.current.set(event.pointerId, stagePoint(event.clientX, event.clientY));
+    const pinch = pinchRef.current;
+    const points = Array.from(touchPointsRef.current.values());
+    if (!pinch || points.length < 2) return;
+    event.preventDefault();
+    const [first, second] = points;
+    const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+    const zoom = clampZoom(pinch.viewport.zoom * distance / pinch.distance);
+    const anchoredWorld = {
+      x: (pinch.midpoint.x - pinch.viewport.x) / pinch.viewport.zoom,
+      y: (pinch.midpoint.y - pinch.viewport.y) / pinch.viewport.zoom,
+    };
+    setViewport({ x: midpoint.x - anchoredWorld.x * zoom, y: midpoint.y - anchoredWorld.y * zoom, zoom });
+  };
+
+  const handleTouchPointerEndCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!touchPointsRef.current.delete(event.pointerId)) return;
+    if (touchPointsRef.current.size < 2) {
+      pinchRef.current = null;
+      gestureRef.current = null;
+    }
   };
 
   const centerWorld = (width = 0, height = 0): CanvasPoint => {
@@ -669,7 +733,7 @@ export function CanvasView({
 
   const beginNodeGesture = (event: ReactPointerEvent, node: CanvasNode) => {
     event.stopPropagation();
-    if (tool !== 'select' || event.button !== 0) return;
+    if (pinchRef.current || tool !== 'select' || event.button !== 0) return;
     const interactive = (event.target as HTMLElement).closest('.canvas-node-interactive, button, textarea, input');
     const wasSelected = selectedRef.current.includes(node.id);
     if (event.shiftKey) selectNode(node.id, true);
@@ -708,7 +772,7 @@ export function CanvasView({
   };
 
   const handleStagePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 && event.button !== 1) return;
+    if (pinchRef.current || (event.button !== 0 && event.button !== 1)) return;
     setLibraryPanel(null);
     setFreshNodeId(null);
     setConnectorSourceId(null);
@@ -782,6 +846,7 @@ export function CanvasView({
   };
 
   const handleStagePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (pinchRef.current) return;
     const point = screenToWorld(event.clientX, event.clientY);
     setPointerWorld(point);
     const gesture = gestureRef.current;
@@ -1017,6 +1082,19 @@ export function CanvasView({
   }));
 
   const selectedCount = selectedNodeIds.length + Number(Boolean(selectedConnectionId)) + Number(Boolean(selectedStrokeId));
+  const selectedNodeActionPosition = mobile && selectedNode ? (() => {
+    const node = renderedNodes[selectedNode.id] ?? selectedNode;
+    const zoom = viewport.zoom;
+    const left = viewport.x + node.x * zoom;
+    const top = viewport.y + node.y * zoom;
+    const bottom = top + node.height * zoom;
+    const x = Math.max(62, Math.min(stageSize.width - 62, left + node.width * zoom / 2));
+    const placeBelow = top < 64;
+    const y = placeBelow
+      ? Math.max(8, Math.min(stageSize.height - 46, bottom + 10))
+      : Math.max(46, Math.min(stageSize.height - 8, top - 10));
+    return { x, y, placeBelow };
+  })() : null;
 
   return (
     <main className="workspace-main canvas-view page-enter">
@@ -1040,6 +1118,10 @@ export function CanvasView({
           '--canvas-grid-size': `${GRID_SIZE * viewport.zoom}px`,
         } as CSSProperties}
         tabIndex={0}
+        onPointerDownCapture={handleTouchPointerDownCapture}
+        onPointerMoveCapture={handleTouchPointerMoveCapture}
+        onPointerUpCapture={handleTouchPointerEndCapture}
+        onPointerCancelCapture={handleTouchPointerEndCapture}
         onPointerDown={handleStagePointerDown}
         onPointerMove={handleStagePointerMove}
         onPointerUp={finishGesture}
@@ -1087,7 +1169,7 @@ export function CanvasView({
             <div className="canvas-import-actions">
               <button onClick={() => { onAddFiles(centerWorld(276, 138), 'files'); setLibraryPanel(null); }}><File size={17} /><span><strong>{t('Import files')}</strong><small>{t('Choose from this device')}</small></span></button>
               <button onClick={() => { onAddFiles(centerWorld(276, 138), 'folders'); setLibraryPanel(null); }}><Folder size={17} /><span><strong>{t('Import folder')}</strong><small>{t('Keep a folder together')}</small></span></button>
-              {!mobile && <button onClick={() => { onAddFiles(centerWorld(276, 138), 'references'); setLibraryPanel(null); }}><HardDrive size={17} /><span><strong>{t('Add local file reference')}</strong><small>{t('Keep the path, not the file')}</small></span></button>}
+              {!nativeMobile && <button onClick={() => { onAddFiles(centerWorld(276, 138), 'references'); setLibraryPanel(null); }}><HardDrive size={17} /><span><strong>{t('Add local file reference')}</strong><small>{t('Keep the path, not the file')}</small></span></button>}
             </div>
             {attachments.length > 0 && <p className="canvas-library-label">{t('Already in this workspace')}</p>}
             <div className="canvas-library-list">
@@ -1267,6 +1349,19 @@ export function CanvasView({
             );
           })}
         </div>
+
+        {selectedNodeActionPosition && (
+          <div
+            className={`canvas-context-actions ${selectedNodeActionPosition.placeBelow ? 'below' : ''}`}
+            role="toolbar"
+            aria-label={t('Selected object actions')}
+            style={{ left: selectedNodeActionPosition.x, top: selectedNodeActionPosition.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button type="button" onClick={duplicateSelection} aria-label={t('Duplicate')} title={t('Duplicate')}><Copy size={17} /></button>
+            <button type="button" className="danger" onClick={deleteSelection} aria-label={t('Remove from canvas')} title={t('Remove from canvas')}><Trash2 size={17} /></button>
+          </div>
+        )}
 
         {isEmpty && (
           <section className="canvas-empty-state" onPointerDown={(event) => event.stopPropagation()}>

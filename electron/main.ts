@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, sessio
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createAttachmentPreview } from './attachment-preview';
-import { GitWorkspaceService, type GitCredentials } from './git-service';
+import { diagnostics, GitWorkspaceService, type GitCredentials } from './git-service';
 
 if (process.platform === 'linux') {
   // Some Linux installations disable IPv6 at kernel level. Keep Chromium's
@@ -97,6 +97,27 @@ function registerIpc(): void {
       });
     }
   });
+  ipcMain.handle('diagnostics:list', () => diagnostics.list());
+  ipcMain.handle('diagnostics:record', (_event, entry: { level?: 'info' | 'error'; scope?: string; message?: string; details?: string }) =>
+    diagnostics.record({
+      level: entry?.level === 'error' ? 'error' : 'info',
+      scope: entry?.scope ?? 'renderer',
+      message: entry?.message ?? 'Renderer operation completed.',
+      details: entry?.details,
+    }),
+  );
+  ipcMain.handle('diagnostics:clear', () => diagnostics.clear());
+  ipcMain.handle('diagnostics:export', async (_event, language: 'en' | 'he' = 'en') => {
+    const result = await dialog.showSaveDialog({
+      title: language === 'he' ? 'ייצוא אבחון Kanbanos' : 'Export Kanbanos diagnostics',
+      defaultPath: path.join(app.getPath('downloads'), `kanbanos-diagnostics-${new Date().toISOString().slice(0, 10)}.log`),
+      filters: [{ name: 'Log files', extensions: ['log', 'txt'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    await diagnostics.export(result.filePath);
+    return result.filePath;
+  });
+
   ipcMain.handle('repository:status', () => gitWorkspace.restoreConnection());
   ipcMain.handle('repository:list-recent', () => gitWorkspace.listRecentConnections());
   ipcMain.handle('repository:open-recent', (_event, repositoryPath: string) =>
@@ -176,10 +197,11 @@ function registerIpc(): void {
     gitWorkspace.removeAttachment(attachmentId),
   );
 
-  ipcMain.handle('workspace:load', () => gitWorkspace.loadWorkspace());
+  ipcMain.handle('workspace:load', () => gitWorkspace.loadWorkspaceForApp());
   ipcMain.handle('workspace:save', (_event, document: unknown) =>
     gitWorkspace.saveWorkspace(document),
   );
+  ipcMain.handle('workspace:sync', () => gitWorkspace.syncWorkspace());
   ipcMain.handle('workspace:resolve-conflicts', (_event, strategy: 'local' | 'remote') =>
     gitWorkspace.resolveConflicts(strategy),
   );

@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, X } from 'lucide-react';
 import kanbanosLogo from './assets/kanbanos-mascot.png';
 import { CanvasView } from './components/CanvasView';
 import { ConflictDialog } from './components/ConflictDialog';
+import { DiagnosticsModal } from './components/DiagnosticsModal';
 import { FilesView } from './components/FilesView';
 import { KanbanBoard } from './components/KanbanBoard';
 import { ListView } from './components/ListView';
@@ -56,22 +57,72 @@ export default function App() {
   const [remoteModalOpen, setRemoteModalOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState<RepositoryConnection[]>([]);
   const [conflicts, setConflicts] = useState<GitConflict[] | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const revisionRef = useRef(0);
   const saveInFlightRef = useRef(false);
+  const syncInFlightRef = useRef(false);
 
   const notify = useCallback((message: string, kind: Toast['kind'] = 'success') => {
     setToast({ message, kind });
     window.setTimeout(() => setToast(null), 3600);
   }, []);
 
+  const recordDiagnostic = useCallback((scope: string, message: string, level: 'info' | 'error' = 'info', details?: string) => {
+    void window.kanbanos?.diagnostics?.record({ scope, message, level, details });
+  }, []);
+
+  const sync = useCallback(async (quiet = false) => {
+    if (syncInFlightRef.current || !window.kanbanos) return;
+    syncInFlightRef.current = true;
+    const syncedRevision = revisionRef.current;
+    recordDiagnostic('sync', 'Checking for remote workspace updates.');
+    setSaveState('saving');
+    try {
+      const result = await window.kanbanos.workspace.sync();
+      const unchanged = revisionRef.current === syncedRevision;
+      if (result.status === 'conflict') {
+        setConflicts(result.conflicts ?? []);
+        setDirty(!unchanged);
+        setSaveState('error');
+        setSyncError(result.message);
+        if (!quiet) notify(t(result.message), 'error');
+        return;
+      }
+      if (unchanged && isWorkspaceDocument(result.document)) setDocument(normalizeWorkspaceDocument(result.document));
+      setDirty(!unchanged);
+      setSaveState(
+        unchanged
+          ? result.status === 'synced'
+            ? 'synced'
+            : result.status === 'local-only'
+              ? 'local'
+              : 'error'
+          : 'idle',
+      );
+      setSyncError(result.status === 'error' ? result.message : '');
+      recordDiagnostic('sync', 'Remote update check finished.', result.status === 'error' ? 'error' : 'info', `${result.status}: ${result.message}`);
+      if (result.status === 'error' && !quiet) notify(t(result.message), 'error');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not sync the workspace.';
+      setSaveState(revisionRef.current === syncedRevision ? 'error' : 'idle');
+      setSyncError(message);
+      recordDiagnostic('sync', 'Remote update check failed.', 'error', message);
+      if (!quiet) notify(t(message), 'error');
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }, [notify, recordDiagnostic, t]);
+
   const loadWorkspace = useCallback(async (nextConnection: RepositoryConnection) => {
+    recordDiagnostic('workspace', 'Opening workspace.');
     setConnection(nextConnection);
     setSyncError('');
     setConflicts(null);
     setActiveView('board');
-    const stored = window.kanbanos ? await window.kanbanos.workspace.load() : null;
+    const loaded = window.kanbanos ? await window.kanbanos.workspace.load() : { document: null };
+    const stored = loaded.document;
     revisionRef.current = 0;
     if (isWorkspaceDocument(stored)) {
       let loadedDocument = normalizeWorkspaceDocument(stored);
@@ -79,7 +130,7 @@ export default function App() {
       let loadedSyncError = '';
       if (window.kanbanos && nextConnection.remoteUrl) {
         try {
-          const result = await window.kanbanos.workspace.save(loadedDocument);
+          const result = await window.kanbanos.workspace.sync();
           if (result.status === 'conflict') {
             setConflicts(result.conflicts ?? []);
             loadedSaveState = 'error';
@@ -111,7 +162,16 @@ export default function App() {
       setSaveState('idle');
     }
     setBootState('ready');
-  }, [t]);
+    if (loaded.recovery) {
+      notify(t(
+        loaded.recovery.restored
+          ? 'We found damaged workspace data and restored your last saved version. A backup was kept at {{path}}.'
+          : 'We found damaged workspace data. A backup was kept at {{path}} and a new workspace was started.',
+        { path: loaded.recovery.backupPath },
+      ), 'error');
+    }
+    recordDiagnostic('workspace', 'Workspace opened.');
+  }, [notify, recordDiagnostic, t]);
 
   useEffect(() => {
     const boot = async () => {
@@ -132,19 +192,21 @@ export default function App() {
 
   const applyAction = useCallback((action: WorkspaceAction) => {
     revisionRef.current += 1;
+    recordDiagnostic('workspace', 'Workspace action applied.', 'info', action.type);
     setDocument((current) => workspaceReducer(current, action));
     setDirty(true);
     if (saveState !== 'saving') {
       setSaveState('idle');
       setSyncError('');
     }
-  }, [saveState]);
+  }, [recordDiagnostic, saveState]);
 
-  const save = useCallback(async () => {
+  const save = useCallback(async (quiet = false) => {
     if (saveInFlightRef.current) return;
     saveInFlightRef.current = true;
     const savedRevision = revisionRef.current;
     const documentToSave = document;
+    recordDiagnostic('sync', 'Saving workspace.');
     setSaveState('saving');
     try {
       if (!window.kanbanos) {
@@ -152,7 +214,7 @@ export default function App() {
         const unchanged = revisionRef.current === savedRevision;
         setDirty(!unchanged);
         setSaveState(unchanged ? 'synced' : 'idle');
-        notify(t('Workspace saved in preview mode.'));
+        if (!quiet) notify(t('Workspace saved in preview mode.'));
         return;
       }
       const result = await window.kanbanos.workspace.save(documentToSave);
@@ -177,22 +239,44 @@ export default function App() {
           : 'idle',
       );
       setSyncError(result.status === 'error' ? result.message : '');
-      notify(t(result.message), result.status === 'error' ? 'error' : 'success');
+      recordDiagnostic('sync', 'Save finished.', result.status === 'error' ? 'error' : 'info', `${result.status}: ${result.message}`);
+      if (result.status === 'error') notify(t(result.message), 'error');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not save the workspace.';
       setSaveState(revisionRef.current === savedRevision ? 'error' : 'idle');
       setSyncError(message);
+      recordDiagnostic('sync', 'Saving workspace failed.', 'error', message);
       notify(t(message), 'error');
     } finally {
       saveInFlightRef.current = false;
     }
-  }, [document, notify, t]);
+  }, [document, notify, recordDiagnostic, t]);
 
   useEffect(() => {
     if (bootState !== 'ready' || !connection || !dirty || saveState === 'saving' || saveState === 'error') return;
-    const timer = window.setTimeout(() => void save(), 700);
+    const timer = window.setTimeout(() => void save(true), 700);
     return () => window.clearTimeout(timer);
   }, [bootState, connection, dirty, document, save, saveState]);
+
+  useEffect(() => {
+    const syncWhenActive = () => {
+      if (window.document.visibilityState !== 'hidden' && bootState === 'ready' && connection?.remoteUrl && !dirty && saveState !== 'saving' && saveState !== 'error') void sync(true);
+    };
+    window.addEventListener('focus', syncWhenActive);
+    window.document.addEventListener('visibilitychange', syncWhenActive);
+    return () => {
+      window.removeEventListener('focus', syncWhenActive);
+      window.document.removeEventListener('visibilitychange', syncWhenActive);
+    };
+  }, [bootState, connection?.remoteUrl, dirty, saveState, sync]);
+
+  useEffect(() => {
+    if (bootState !== 'ready' || !connection?.remoteUrl || dirty || saveState === 'saving' || saveState === 'error') return;
+    const timer = window.setInterval(() => {
+      if (window.document.visibilityState !== 'hidden') void sync(true);
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [bootState, connection?.remoteUrl, dirty, saveState, sync]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -450,7 +534,7 @@ export default function App() {
     }
     setPendingCanvasTask(null);
     setTaskComposer(null);
-    setOpenTaskId(task.id);
+    if (!compactLayout) setOpenTaskId(task.id);
   };
 
   const activeProject = useMemo(() => {
@@ -480,6 +564,7 @@ export default function App() {
       const handles = await Promise.all([
         NativeApp.addListener('appStateChange', ({ isActive }) => {
           if (!isActive && dirty) void save();
+          if (isActive && connection?.remoteUrl && !dirty && saveState !== 'saving' && saveState !== 'error') void sync(true);
         }),
         NativeApp.addListener('backButton', () => {
           if (mobileMenuOpen) setMobileMenuOpen(false);
@@ -493,7 +578,7 @@ export default function App() {
           else void NativeApp.minimizeApp();
         }),
         Network.addListener('networkStatusChange', ({ connected }) => {
-          if (connected && connection?.remoteUrl && saveState === 'error') void save();
+          if (connected && connection?.remoteUrl && !dirty && saveState !== 'saving' && saveState !== 'error') void sync(true);
         }),
       ]);
       if (disposed) {
@@ -508,7 +593,7 @@ export default function App() {
       disposed = true;
       for (const remove of removers) void remove();
     };
-  }, [activeView, conflicts, connection?.remoteUrl, dirty, mobileMenuOpen, openTaskId, previewAttachment, projectModal, remoteModalOpen, save, saveState, taskComposer]);
+  }, [activeView, conflicts, connection?.remoteUrl, dirty, mobileMenuOpen, openTaskId, previewAttachment, projectModal, remoteModalOpen, save, saveState, sync, taskComposer]);
 
   if (bootState === 'loading') return <LoadingScreen />;
   if (bootState === 'onboarding' || !connection) {
@@ -550,6 +635,7 @@ export default function App() {
         onRevealRepository={() => void window.kanbanos?.repository.reveal().catch((error: unknown) => {
           notify(error instanceof Error ? t(error.message) : t('Could not export or open this workspace.'), 'error');
         })}
+        onOpenDiagnostics={() => setDiagnosticsOpen(true)}
         onDisconnect={() => void disconnect()}
         mobileOpen={mobileMenuOpen}
         onMobileClose={() => setMobileMenuOpen(false)}
@@ -560,7 +646,10 @@ export default function App() {
           activeView={activeView}
           activeProject={activeProject}
           menuOpen={mobileMenuOpen}
+          saveState={saveState}
+          dirty={dirty}
           onOpenMenu={() => setMobileMenuOpen((open) => !open)}
+          onSave={() => void save()}
           onChangeView={(view) => { setActiveView(view); setMobileMenuOpen(false); }}
         />
       )}
@@ -600,7 +689,9 @@ export default function App() {
           dirty={dirty}
           onOpenTask={(item) => setOpenTaskId(item.id)}
           onCreateTask={(preset) => openTaskComposer(activeProject.id, preset)}
+          onAction={applyAction}
           onSave={() => void save()}
+          onEditProject={() => setProjectModal({ mode: 'edit', projectId: activeProject.id })}
         />
       ) : (
         <TimelineView
@@ -628,7 +719,8 @@ export default function App() {
           onAddFiles={(point, kind) => void addCanvasAttachments(activeProject.id, point, kind)}
           onPreviewAttachment={requestAttachmentPreview}
           onOpenAttachment={(attachment) => void openAttachment(attachment)}
-          mobile={isNativeMobile()}
+          mobile={compactLayout}
+          nativeMobile={isNativeMobile()}
         />
       )}
       {activeView === 'roadmap' && (
@@ -704,6 +796,9 @@ export default function App() {
           />
         </Suspense>
       )}
+      {diagnosticsOpen && (
+        <DiagnosticsModal onClose={() => setDiagnosticsOpen(false)} onNotify={notify} />
+      )}
       {remoteModalOpen && (
         <RemoteModal
           currentUrl={connection.remoteUrl}
@@ -728,7 +823,7 @@ export default function App() {
         <ConflictDialog conflicts={conflicts} onResolve={resolveConflict} onClose={() => setConflicts(null)} />
       )}
       {toast && (
-        <div className={`toast toast-${toast.kind} slide-up`}>
+        <div className={`toast toast-${toast.kind} slide-up`} role={toast.kind === 'error' ? 'alert' : 'status'}>
           {toast.kind === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)}><X size={15} /></button>

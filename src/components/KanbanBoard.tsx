@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import {
   closestCorners,
   DndContext,
@@ -25,6 +25,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   Check,
   ChevronDown,
+  Columns3,
   Ellipsis,
   Filter,
   GripVertical,
@@ -33,6 +34,7 @@ import {
   Plus,
   Search,
   Sparkles,
+  Rows3,
   X,
 } from 'lucide-react';
 import type { KanbanColumn, Priority, Project, TaskDraft, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
@@ -195,7 +197,7 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
     <section
       ref={setNodeRef}
       className={`board-column ${isOver ? 'column-over' : ''} ${isDragging ? 'column-dragging' : ''}`}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      style={{ transform: CSS.Transform.toString(transform), transition, '--column-color': column.color } as CSSProperties}
     >
       <header className="column-header">
         <div className="column-heading">
@@ -327,6 +329,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
   const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null);
   const [taskDropPreview, setTaskDropPreview] = useState<TaskDropPreviewState | null>(null);
   const [scope, setScope] = useState<ProjectScope>('current');
+  const [mobileBoardOrientation, setMobileBoardOrientation] = useState<'stacked' | 'horizontal'>('stacked');
 
   useEffect(() => setScope('current'), [project.id]);
 
@@ -478,7 +481,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
   const scopeTitle = showAllProjects ? t('All projects') : project.name;
 
   return (
-    <main className="workspace-main">
+    <main className={`workspace-main ${compactLayout && mobileBoardOrientation === 'horizontal' ? 'mobile-board-horizontal' : ''}`}>
       <header className="board-topbar">
         <div className="breadcrumbs"><span>{t('Projects')}</span><b>/</b><strong>{scopeTitle}</strong></div>
         <div className="topbar-actions">
@@ -503,7 +506,16 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
           <span className="project-icon" style={{ background: `${project.color}18`, color: project.color }}><LayoutGrid size={21} /></span>
           <div><h1>{scopeTitle}</h1><p>{showAllProjects ? t('Missions across every project in this workspace.') : project.description || t('A focused space for moving work forward.')}</p></div>
         </div>
-        <div className="board-view-toggle"><button className="active"><LayoutGrid size={15} /> {t('Board')}</button><button onClick={() => onChangeView('list')}><ListFilter size={15} /> {t('List')}</button></div>
+        <div className="board-view-controls">
+          <div className="board-view-toggle"><button className="active"><LayoutGrid size={15} /> {t('Board')}</button><button onClick={() => onChangeView('list')}><ListFilter size={15} /> {t('List')}</button></div>
+          {compactLayout && <button
+            type="button"
+            className="mobile-board-orientation"
+            aria-label={t(mobileBoardOrientation === 'stacked' ? 'Show columns horizontally' : 'Stack columns vertically')}
+            title={t(mobileBoardOrientation === 'stacked' ? 'Show columns horizontally' : 'Stack columns vertically')}
+            onClick={() => setMobileBoardOrientation((current) => current === 'stacked' ? 'horizontal' : 'stacked')}
+          >{mobileBoardOrientation === 'stacked' ? <Columns3 size={19} /> : <Rows3 size={19} />}</button>}
+        </div>
       </div>
 
       <div className="board-toolbar">
@@ -536,6 +548,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
 
       <DndContext
         sensors={sensors}
+        autoScroll={compactLayout ? { acceleration: 30, interval: 4, threshold: { x: 0.08, y: 0.38 } } : true}
         collisionDetection={boardCollisionDetection}
         onDragStart={onDragStart}
         onDragOver={onDragOver}

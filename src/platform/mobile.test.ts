@@ -172,10 +172,22 @@ afterEach(async () => {
 });
 
 describe('mobile Git workspace', () => {
-  it('keeps system status-bar content readable in every mobile theme', () => {
-    expect(mobileStatusBarAppearance('dark', 'android')).toMatchObject({ style: 'LIGHT', backgroundColor: '#f5f6f8' });
-    expect(mobileStatusBarAppearance('light', 'android')).toMatchObject({ style: 'LIGHT', backgroundColor: '#f5f6f8' });
-    expect(mobileStatusBarAppearance('dark', 'ios')).toMatchObject({ style: 'DARK', backgroundColor: '#343943' });
+  it('renders Android status-bar content over the active app theme', () => {
+    expect(mobileStatusBarAppearance('light', 'android')).toMatchObject({
+      style: 'LIGHT',
+      backgroundColor: '#f5f6f8',
+      overlaysWebView: true,
+    });
+    expect(mobileStatusBarAppearance('dark', 'android')).toMatchObject({
+      style: 'DARK',
+      backgroundColor: '#343943',
+      overlaysWebView: true,
+    });
+    expect(mobileStatusBarAppearance('dark', 'ios')).toMatchObject({
+      style: 'DARK',
+      backgroundColor: '#343943',
+      overlaysWebView: false,
+    });
   });
 
   it('preserves binary Git request and response bytes through Capacitor HTTP', async () => {
@@ -257,6 +269,21 @@ describe('mobile Git workspace', () => {
     await expect(reopened.fs.promises.stat(connection.repositoryPath)).rejects.toThrow();
   });
 
+  it('backs up malformed workspace JSON and restores the last valid saved version', async () => {
+    const current = service(`mobile-recovery-${crypto.randomUUID()}`).value;
+    const connection = await current.createLocal('Recovery');
+    const savedDocument = { version: 4, workspace: { name: 'Safe version' } };
+    await current.saveWorkspace(savedDocument);
+    const damaged = '{\n  "version": 4,\n  "workspace": { "name": "Damaged" },\n}';
+    await current.fs.promises.writeFile(`${connection.repositoryPath}/.kanbanos/workspace.json`, damaged);
+
+    const recovered = await current.loadWorkspaceForApp();
+
+    expect(recovered).toMatchObject({ document: savedDocument, recovery: { restored: true } });
+    await expect(current.fs.promises.readFile(`${connection.repositoryPath}/${recovered.recovery!.backupPath}`, 'utf8')).resolves.toBe(damaged);
+    await expect(current.loadWorkspace()).resolves.toEqual(savedDocument);
+  });
+
   it('imports, previews, exports, and removes mobile attachments', async () => {
     const nativeFiles = new MemoryNativeFiles();
     nativeFiles.files = [
@@ -324,6 +351,26 @@ describe('mobile Git workspace', () => {
     await expect(target.fs.promises.readFile(`${imported!.repositoryPath}/.kanbanos/.gitignore`, 'utf8')).resolves.toBe('/credentials.json\n');
     await expect(target.fs.promises.stat(`${imported!.repositoryPath}/.kanbanos/credentials.json`)).rejects.toThrow();
   });
+
+  it('fast-forwards a clean mobile workspace without writing its stale document', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'kanbanos-mobile-sync-'));
+    temporaryDirectories.push(root);
+    await seedRemote(root, { version: 4, marker: 'base' });
+    const remote = await startGitServer(root);
+    servers.push(remote.server);
+    const nativeHttp = nativeGitHttpThroughFetch();
+    const publisher = service(`mobile-sync-publisher-${crypto.randomUUID()}`, new MemorySettings(), new MemoryNativeFiles(), nativeHttp).value;
+    const reader = service(`mobile-sync-reader-${crypto.randomUUID()}`, new MemorySettings(), new MemoryNativeFiles(), nativeHttp).value;
+    await publisher.connectRemote(remote.url);
+    await reader.connectRemote(remote.url);
+    const updated = { version: 4, marker: 'fetched from remote' };
+    await expect(publisher.saveWorkspace(updated)).resolves.toMatchObject({ status: 'synced' });
+    const remoteHead = await exec('git', ['rev-parse', 'main'], path.join(root, 'workspace.git'));
+
+    await expect(reader.syncWorkspace()).resolves.toMatchObject({ status: 'synced', document: updated });
+    await expect(reader.loadWorkspace()).resolves.toEqual(updated);
+    expect(await exec('git', ['rev-parse', 'main'], path.join(root, 'workspace.git'))).toBe(remoteHead);
+  }, 30_000);
 
   it('clones, pushes, detects a competing edit, and resolves it on mobile', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'kanbanos-mobile-git-'));

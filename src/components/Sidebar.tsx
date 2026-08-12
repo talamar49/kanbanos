@@ -9,6 +9,7 @@ import {
   Columns3,
   Ellipsis,
   FolderOpen,
+  FileClock,
   LogOut,
   Paperclip,
   PenTool,
@@ -38,6 +39,7 @@ type Props = {
   onAddRemote: () => void;
   onRetrySync: () => void;
   onRevealRepository: () => void;
+  onOpenDiagnostics?: () => void;
   onDisconnect: () => void;
   mobileOpen?: boolean;
   onMobileClose?: () => void;
@@ -59,6 +61,7 @@ export function Sidebar({
   onAddRemote,
   onRetrySync,
   onRevealRepository,
+  onOpenDiagnostics,
   onDisconnect,
   mobileOpen = false,
   onMobileClose,
@@ -109,6 +112,7 @@ export function Sidebar({
           <div className="popover workspace-menu scale-in">
             <button onClick={() => { onAddRemote(); setMenuOpen(false); }}><Cloud size={15} /> {t(hasRemote ? 'Change remote repository' : 'Add remote repository')}</button>
             <button onClick={() => { onRevealRepository(); setMenuOpen(false); }}><FolderOpen size={15} /> {t(mobile ? 'Export workspace package' : 'Open repository folder')}</button>
+            {!mobile && onOpenDiagnostics && <button onClick={() => { onOpenDiagnostics(); setMenuOpen(false); }}><FileClock size={15} /> {t('Diagnostics & logs')}</button>}
             <button><Settings2 size={15} /> {t('Workspace settings')} <span className="coming-pill">{t('Soon')}</span></button>
             <div className="popover-separator" />
             <button className="danger-option" onClick={onDisconnect}><LogOut size={15} /> {t('Disconnect workspace')}</button>
@@ -187,6 +191,7 @@ export function Sidebar({
                 <span className="sync-reassurance">{t('Your local work is safe')}</span>
                 <div className="sync-error-actions">
                   <button onClick={onRetrySync}><RefreshCw size={11} /> {t('Retry sync')}</button>
+                  {!mobile && onOpenDiagnostics && <button onClick={onOpenDiagnostics}>{t('View logs')}</button>}
                   <button onClick={onAddRemote}>{t('Credentials')}</button>
                 </div>
               </>

@@ -118,6 +118,16 @@ function bytesToBase64(value: Uint8Array): string {
   return btoa(output);
 }
 
+function diagnosticText(value: string, maximum: number): string {
+  return value
+    .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1[redacted]@')
+    .replace(/((?:token|password|access_token)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/authorization:\s*[^\r\n]+/gi, 'Authorization: [redacted]')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, maximum);
+}
+
 type NativeHttpRequester = Pick<typeof CapacitorHttp, 'request'>;
 
 async function collectRequestBody(body?: AsyncIterableIterator<Uint8Array>): Promise<Uint8Array | null> {
@@ -510,6 +520,8 @@ export class MobileGitWorkspaceService {
   private readonly nativeFiles: MobileNativeFiles;
   private connection: RepositoryConnection | null = null;
   private previewObjectUrl: string | null = null;
+  private diagnosticEntries: DiagnosticEntry[] = [];
+  private operationTail: Promise<void> = Promise.resolve();
 
   constructor(options: MobileServiceOptions = {}) {
     globalThis.Buffer ??= BrowserBuffer;
@@ -518,6 +530,34 @@ export class MobileGitWorkspaceService {
     this.credentialStore = options.credentials ?? new SecureCredentialStore();
     this.http = options.http ?? (Capacitor.isNativePlatform() ? createCapacitorGitHttp() : webHttp);
     this.nativeFiles = options.nativeFiles ?? new CapacitorNativeFiles();
+  }
+
+  async recordDiagnostic(entry: { level?: 'info' | 'error'; scope?: string; message?: string; details?: string }): Promise<void> {
+    this.diagnosticEntries = [...this.diagnosticEntries, {
+      timestamp: new Date().toISOString(),
+      level: entry.level === 'error' ? 'error' as const : 'info' as const,
+      scope: diagnosticText(entry.scope || 'app', 80),
+      message: diagnosticText(entry.message || 'Operation completed.', 1_000),
+      ...(entry.details ? { details: diagnosticText(entry.details, 4_000) } : {}),
+    }].slice(-25_000);
+  }
+
+  async listDiagnostics(): Promise<DiagnosticEntry[]> {
+    return this.diagnosticEntries.slice(-2_000);
+  }
+
+  async clearDiagnostics(): Promise<void> {
+    this.diagnosticEntries = [];
+  }
+
+  async exportDiagnostics(_language?: 'en' | 'he'): Promise<string> {
+    const name = `kanbanos-diagnostics-${new Date().toISOString().slice(0, 10)}.log`;
+    await this.nativeFiles.share(
+      name,
+      new TextEncoder().encode(this.diagnosticEntries.map((entry) => JSON.stringify(entry)).join('\n')),
+      document.documentElement.lang === 'he' ? 'ייצוא אבחון Kanbanos' : 'Export Kanbanos diagnostics',
+    );
+    return name;
   }
 
   private async readSettings(): Promise<ConnectionSettings> {
@@ -543,6 +583,18 @@ export class MobileGitWorkspaceService {
   private requireConnection(): RepositoryConnection {
     if (!this.connection) throw new Error('No workspace is connected.');
     return this.connection;
+  }
+
+  private async withGitOperation<T>(operation: () => Promise<T>): Promise<T> {
+    let release: (() => void) | undefined;
+    const previous = this.operationTail;
+    this.operationTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release?.();
+    }
   }
 
   private async flush(): Promise<void> {
@@ -769,9 +821,66 @@ export class MobileGitWorkspaceService {
     }
   }
 
+  async loadWorkspaceForApp(): Promise<WorkspaceLoadResult> {
+    const repository = this.requireConnection();
+    const workspacePath = pathJoin(repository.repositoryPath, WORKSPACE_FILE);
+    let raw: string;
+    try {
+      raw = await this.fs.promises.readFile(workspacePath, 'utf8') as string;
+    } catch (error) {
+      if (isMissing(error)) return { document: null };
+      throw error;
+    }
+
+    try {
+      return { document: JSON.parse(raw) };
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      const backupPath = pathJoin(
+        repository.repositoryPath,
+        DATA_DIRECTORY,
+        'recovery',
+        `workspace-${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 10)}.json`,
+      );
+      await mkdirp(this.fs.promises, pathDirname(backupPath));
+      await this.fs.promises.writeFile(backupPath, raw);
+
+      let document: unknown | null = null;
+      let restored = false;
+      try {
+        const oid = await git.resolveRef({ fs: this.fs, dir: repository.repositoryPath, ref: 'HEAD' });
+        const committed = await readBlobAt(this.fs, repository.repositoryPath, oid, WORKSPACE_FILE);
+        if (committed) {
+          const serialized = new TextDecoder().decode(committed);
+          document = JSON.parse(serialized);
+          restored = true;
+          await this.fs.promises.writeFile(workspacePath, serialized);
+        }
+      } catch {
+        // A missing or malformed committed version cannot be restored automatically.
+      }
+      if (!restored && await exists(this.fs.promises, workspacePath)) await this.fs.promises.unlink(workspacePath);
+      await this.recordDiagnostic({
+        level: 'error',
+        scope: 'workspace',
+        message: 'Invalid workspace JSON was backed up before recovery.',
+        details: error.message,
+      });
+      await this.flush();
+      return {
+        document,
+        recovery: {
+          backupPath: pathJoin('/', backupPath.slice(repository.repositoryPath.length)).slice(1),
+          restored,
+        },
+      };
+    }
+  }
+
   private async stageManaged(dir: string): Promise<void> {
     const matrix = await git.statusMatrix({ fs: this.fs, dir, filepaths: [DATA_DIRECTORY] });
     for (const [filepath, head, workdir] of matrix) {
+      if (filepath.startsWith(`${DATA_DIRECTORY}/recovery/`)) continue;
       if (workdir === 0 && head !== 0) await git.remove({ fs: this.fs, dir, filepath });
       else if (workdir !== 0) await git.add({ fs: this.fs, dir, filepath });
     }
@@ -809,6 +918,10 @@ export class MobileGitWorkspaceService {
   }
 
   async saveWorkspace(document: unknown): Promise<SaveResult> {
+    return this.withGitOperation(() => this.saveWorkspaceInternal(document));
+  }
+
+  private async saveWorkspaceInternal(document: unknown): Promise<SaveResult> {
     const repository = this.requireConnection();
     const dir = repository.repositoryPath;
     const settings = await this.readSettings();
@@ -821,6 +934,21 @@ export class MobileGitWorkspaceService {
       };
     }
 
+    // Fetch before writing the in-memory document so merges use the freshest
+    // remote base while offline edits still remain durable on this device.
+    const branch = await git.currentBranch({ fs: this.fs, dir }) ?? 'main';
+    const credentials = repository.remoteUrl ? await this.credentialsFor(repository) : null;
+    let remoteBranch: string | null = null;
+    let remoteFailure: unknown | null = null;
+    if (repository.remoteUrl) {
+      try {
+        const fetched = await git.fetch({ fs: this.fs, http: this.http, dir, remote: 'origin', onAuth: this.auth(credentials), prune: true });
+        remoteBranch = await this.remoteBranch(branch, fetched.defaultBranch);
+      } catch (error) {
+        remoteFailure = error;
+      }
+    }
+
     const destination = pathJoin(dir, WORKSPACE_FILE);
     await mkdirp(this.fs.promises, pathDirname(destination));
     const temporary = `${destination}.tmp`;
@@ -831,23 +959,18 @@ export class MobileGitWorkspaceService {
     try {
       await this.stageManaged(dir);
       const commit = await this.commitIfChanged(dir, `Update workspace · ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`);
-      const branch = await git.currentBranch({ fs: this.fs, dir }) ?? 'main';
       const head = await git.resolveRef({ fs: this.fs, dir, ref: branch });
       if (!repository.remoteUrl) {
         await this.flush();
         return { status: 'local-only', message: 'Saved to the local Git repository.', commit: commit ?? head, document: await this.loadWorkspace() };
       }
-
-      const credentials = await this.credentialsFor(repository);
-      let fetched;
-      try {
-        fetched = await git.fetch({ fs: this.fs, http: this.http, dir, remote: 'origin', onAuth: this.auth(credentials), prune: true });
-      } catch (error) {
+      if (remoteFailure) {
         await this.flush();
-        return { status: 'error', message: friendlyGitError(error), commit: head, document: await this.loadWorkspace() };
+        return { status: 'error', message: friendlyGitError(remoteFailure), commit: head, document: await this.loadWorkspace() };
       }
-      const remoteBranch = await this.remoteBranch(branch, fetched.defaultBranch);
-      const remoteRef = `remotes/origin/${remoteBranch}`;
+
+      const targetBranch = remoteBranch ?? branch;
+      const remoteRef = `remotes/origin/${targetBranch}`;
       let remoteOid: string;
       try {
         remoteOid = await git.resolveRef({ fs: this.fs, dir, ref: remoteRef });
@@ -871,7 +994,7 @@ export class MobileGitWorkspaceService {
             const pending: PendingConflict = {
               repositoryPath: dir,
               branch,
-              remoteBranch,
+              remoteBranch: targetBranch,
               localOid: head,
               remoteOid,
               files: error.data.filepaths.filter((filepath) => filepath === DATA_DIRECTORY || filepath.startsWith(`${DATA_DIRECTORY}/`)),
@@ -894,7 +1017,7 @@ export class MobileGitWorkspaceService {
       }
 
       try {
-        await git.push({ fs: this.fs, http: this.http, dir, remote: 'origin', ref: branch, remoteRef: remoteBranch, onAuth: this.auth(credentials) });
+        await git.push({ fs: this.fs, http: this.http, dir, remote: 'origin', ref: branch, remoteRef: targetBranch, onAuth: this.auth(credentials) });
       } catch (error) {
         await this.flush();
         const latest = await git.resolveRef({ fs: this.fs, dir, ref: branch });
@@ -909,12 +1032,137 @@ export class MobileGitWorkspaceService {
     }
   }
 
+  async syncWorkspace(): Promise<SaveResult> {
+    return this.withGitOperation(() => this.syncWorkspaceInternal());
+  }
+
+  private async syncWorkspaceInternal(): Promise<SaveResult> {
+    const repository = this.requireConnection();
+    const dir = repository.repositoryPath;
+    const settings = await this.readSettings();
+    const existingConflict = settings.pendingConflicts?.[dir];
+    if (existingConflict) {
+      return {
+        status: 'conflict',
+        message: 'Choose which version to keep before saving again.',
+        conflicts: await this.describeConflicts(dir, existingConflict),
+      };
+    }
+    if (!repository.remoteUrl) {
+      return {
+        status: 'local-only',
+        message: 'Saved to the local Git repository.',
+        document: await this.loadWorkspace(),
+      };
+    }
+
+    const credentials = await this.credentialsFor(repository);
+    let fetched;
+    try {
+      fetched = await git.fetch({ fs: this.fs, http: this.http, dir, remote: 'origin', onAuth: this.auth(credentials), prune: true });
+    } catch (error) {
+      await this.flush();
+      return { status: 'error', message: friendlyGitError(error), document: await this.loadWorkspace() };
+    }
+
+    const branch = await git.currentBranch({ fs: this.fs, dir }) ?? 'main';
+    const remoteBranch = await this.remoteBranch(branch, fetched.defaultBranch);
+    const remoteRef = `remotes/origin/${remoteBranch}`;
+    let remoteOid: string;
+    let head: string;
+    try {
+      [remoteOid, head] = await Promise.all([
+        git.resolveRef({ fs: this.fs, dir, ref: remoteRef }),
+        git.resolveRef({ fs: this.fs, dir, ref: branch }),
+      ]);
+    } catch {
+      await this.flush();
+      return {
+        status: 'synced',
+        message: 'Everything is saved and in sync.',
+        document: await this.loadWorkspace(),
+      };
+    }
+    if (remoteOid === head) {
+      await this.flush();
+      return {
+        status: 'synced',
+        message: 'Everything is saved and in sync.',
+        commit: head,
+        document: await this.loadWorkspace(),
+      };
+    }
+
+    const workingChanges = await git.statusMatrix({ fs: this.fs, dir, filepaths: [DATA_DIRECTORY] });
+    if (workingChanges.some(([, headStatus, workdirStatus, stageStatus]) => headStatus !== workdirStatus || headStatus !== stageStatus)) {
+      await this.flush();
+      return {
+        status: 'error',
+        message: 'Save your local workspace changes before syncing remote updates.',
+        commit: head,
+        document: await this.loadWorkspace(),
+      };
+    }
+    const canFastForward = await git.isDescendent({ fs: this.fs, dir, oid: remoteOid, ancestor: head });
+    if (!canFastForward) {
+      await this.flush();
+      return {
+        status: 'error',
+        message: 'Save your local workspace changes before syncing remote updates.',
+        commit: head,
+        document: await this.loadWorkspace(),
+      };
+    }
+
+    await git.writeRef({ fs: this.fs, dir, ref: branch, value: remoteOid, force: true });
+    await git.checkout({ fs: this.fs, dir, ref: branch, force: true });
+    await this.flush();
+    return {
+      status: 'synced',
+      message: 'Everything is saved and in sync.',
+      commit: remoteOid,
+      document: await this.loadWorkspace(),
+    };
+  }
+
   async resolveConflicts(strategy: 'local' | 'remote'): Promise<SaveResult> {
+    return this.withGitOperation(() => this.resolveConflictsInternal(strategy));
+  }
+
+  private async resolveConflictsInternal(strategy: 'local' | 'remote'): Promise<SaveResult> {
     const repository = this.requireConnection();
     const settings = await this.readSettings();
     const pending = settings.pendingConflicts?.[repository.repositoryPath];
     if (!pending) throw new Error('There are no conflicts to resolve.');
     const dir = repository.repositoryPath;
+    if (strategy === 'remote') {
+      const credentials = await this.credentialsFor(repository);
+      try {
+        await git.fetch({ fs: this.fs, http: this.http, dir, remote: 'origin', onAuth: this.auth(credentials), prune: true });
+      } catch (error) {
+        await this.flush();
+        return { status: 'error', message: friendlyGitError(error), document: await this.loadWorkspace() };
+      }
+      let remoteOid = pending.remoteOid;
+      try {
+        remoteOid = await git.resolveRef({ fs: this.fs, dir, ref: `remotes/origin/${pending.remoteBranch}` });
+      } catch {
+        // The conflict's fetched repository version remains the safest fallback.
+      }
+      await git.writeRef({ fs: this.fs, dir, ref: pending.branch, value: remoteOid, force: true });
+      await git.checkout({ fs: this.fs, dir, ref: pending.branch, force: true });
+      const pendingConflicts = { ...settings.pendingConflicts };
+      delete pendingConflicts[repository.repositoryPath];
+      await this.writeSettings({ ...settings, pendingConflicts });
+      await this.flush();
+      return {
+        status: 'synced',
+        message: 'Repository version selected and workspace synced.',
+        commit: remoteOid,
+        document: await this.loadWorkspace(),
+      };
+    }
+
     await this.restoreConflictVersions(dir, pending, strategy);
     await this.stageManaged(dir);
     await git.commit({
@@ -1093,11 +1341,24 @@ export class MobileGitWorkspaceService {
 let mobileService: MobileGitWorkspaceService | null = null;
 
 export function mobileStatusBarAppearance(theme: 'light' | 'dark', platform = Capacitor.getPlatform()) {
-  const android = platform === 'android';
+  const dark = theme === 'dark';
   return {
-    style: !android && theme === 'dark' ? Style.Dark : Style.Light,
-    backgroundColor: android || theme === 'light' ? '#f5f6f8' : '#343943',
+    style: dark ? Style.Dark : Style.Light,
+    backgroundColor: dark ? '#343943' : '#f5f6f8',
+    overlaysWebView: platform === 'android',
   };
+}
+
+function setNativeStatusBarInset(height: number) {
+  const inset = Number.isFinite(height) ? Math.max(0, height) : 0;
+  document.documentElement.style.setProperty('--native-status-bar-inset', `${inset}px`);
+}
+
+function enableAndroidStatusBarOverlay() {
+  void StatusBar.setOverlaysWebView({ overlay: true })
+    .then(() => StatusBar.getInfo())
+    .then(({ height }) => setNativeStatusBarInset(height))
+    .catch(() => undefined);
 }
 
 export function createMobileBridge(service = new MobileGitWorkspaceService()): NonNullable<Window['kanbanos']> {
@@ -1107,8 +1368,18 @@ export function createMobileBridge(service = new MobileGitWorkspaceService()): N
         document.documentElement.style.colorScheme = theme;
         const appearance = mobileStatusBarAppearance(theme);
         void StatusBar.setStyle({ style: appearance.style }).catch(() => undefined);
-        void StatusBar.setBackgroundColor({ color: appearance.backgroundColor }).catch(() => undefined);
+        if (appearance.overlaysWebView) {
+          enableAndroidStatusBarOverlay();
+        } else {
+          void StatusBar.setBackgroundColor({ color: appearance.backgroundColor }).catch(() => undefined);
+        }
       },
+    },
+    diagnostics: {
+      list: () => service.listDiagnostics(),
+      record: (entry) => service.recordDiagnostic(entry),
+      clear: () => service.clearDiagnostics(),
+      export: (language) => service.exportDiagnostics(language),
     },
     repository: {
       status: () => service.restoreConnection(),
@@ -1134,8 +1405,9 @@ export function createMobileBridge(service = new MobileGitWorkspaceService()): N
       remove: (attachmentId) => service.removeAttachment(attachmentId),
     },
     workspace: {
-      load: () => service.loadWorkspace(),
+      load: () => service.loadWorkspaceForApp(),
       save: (workspace) => service.saveWorkspace(workspace),
+      sync: () => service.syncWorkspace(),
       resolveConflicts: (strategy) => service.resolveConflicts(strategy),
     },
   };
@@ -1143,7 +1415,9 @@ export function createMobileBridge(service = new MobileGitWorkspaceService()): N
 
 export function installMobileBridge(): boolean {
   if (!Capacitor.isNativePlatform()) return false;
-  document.documentElement.classList.add('native-mobile', `platform-${Capacitor.getPlatform()}`);
+  const platform = Capacitor.getPlatform();
+  document.documentElement.classList.add('native-mobile', `platform-${platform}`);
+  if (platform === 'android') enableAndroidStatusBarOverlay();
   mobileService ??= new MobileGitWorkspaceService();
   window.kanbanos ??= createMobileBridge(mobileService);
   return true;

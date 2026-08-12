@@ -21,12 +21,28 @@ type GitConflict = {
   contentTruncated?: boolean;
 };
 
+type DiagnosticEntry = {
+  timestamp: string;
+  level: 'info' | 'error';
+  scope: string;
+  message: string;
+  details?: string;
+};
+
 type SaveResult = {
   status: 'synced' | 'local-only' | 'conflict' | 'error';
   message: string;
   commit?: string;
   conflicts?: GitConflict[];
   document?: unknown;
+};
+
+type WorkspaceLoadResult = {
+  document: unknown | null;
+  recovery?: {
+    backupPath: string;
+    restored: boolean;
+  };
 };
 
 type ImportedAttachment = {
@@ -61,6 +77,12 @@ interface Window {
     appearance: {
       setTheme: (theme: 'light' | 'dark') => void;
     };
+    diagnostics: {
+      list: () => Promise<DiagnosticEntry[]>;
+      record: (entry: { level?: 'info' | 'error'; scope?: string; message?: string; details?: string }) => Promise<void>;
+      clear: () => Promise<void>;
+      export: (language?: 'en' | 'he') => Promise<string | null>;
+    };
     repository: {
       status: () => Promise<RepositoryConnection | null>;
       listRecent: () => Promise<RepositoryConnection[]>;
@@ -85,8 +107,9 @@ interface Window {
       remove: (attachmentId: string) => Promise<void>;
     };
     workspace: {
-      load: () => Promise<unknown | null>;
+      load: () => Promise<WorkspaceLoadResult>;
       save: (document: unknown) => Promise<SaveResult>;
+      sync: () => Promise<SaveResult>;
       resolveConflicts: (strategy: 'local' | 'remote') => Promise<SaveResult>;
     };
   };

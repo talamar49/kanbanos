@@ -109,6 +109,76 @@ describe('Git workspace persistence', () => {
     await expect(fs.access(path.join(connection.repositoryPath, '.kanbanos', 'workspace.json.tmp'))).rejects.toThrow();
   });
 
+  it('backs up malformed workspace JSON and restores the last valid saved version', async () => {
+    const service = new GitWorkspaceService();
+    const connection = await service.createLocal('Workspace JSON recovery');
+    const savedDocument = { schemaVersion: 1, workspace: { name: 'Safe version' }, projects: [], items: {} };
+    await service.saveWorkspace(savedDocument);
+    const damaged = '{\n  "schemaVersion": 1,\n  "workspace": { "name": "Damaged" },\n}';
+    await fs.writeFile(path.join(connection.repositoryPath, '.kanbanos', 'workspace.json'), damaged, 'utf8');
+
+    const recovered = await service.loadWorkspaceForApp();
+
+    expect(recovered).toMatchObject({ document: savedDocument, recovery: { restored: true } });
+    expect(recovered.recovery?.backupPath).toMatch(/^\.kanbanos\/recovery\/workspace-.+\.json$/);
+    await expect(fs.readFile(path.join(connection.repositoryPath, ...recovered.recovery!.backupPath.split('/')), 'utf8')).resolves.toBe(damaged);
+    await expect(service.loadWorkspace()).resolves.toEqual(savedDocument);
+
+    await service.saveWorkspace(savedDocument);
+    expect(await git(connection.repositoryPath, 'ls-files', '--', '.kanbanos/recovery')).toBe('');
+    await expect(fs.readFile(path.join(connection.repositoryPath, '.kanbanos', '.gitignore'), 'utf8')).resolves.toContain('/recovery/');
+  });
+
+  it('keeps malformed workspace JSON recoverable when there is no saved version yet', async () => {
+    const service = new GitWorkspaceService();
+    const connection = await service.createLocal('Unsaved workspace JSON recovery');
+    const damaged = '{\n  "schemaVersion": 1,\n  "workspace": { "name": "Damaged" },\n}';
+    await fs.mkdir(path.join(connection.repositoryPath, '.kanbanos'), { recursive: true });
+    await fs.writeFile(path.join(connection.repositoryPath, '.kanbanos', 'workspace.json'), damaged, 'utf8');
+
+    const recovered = await service.loadWorkspaceForApp();
+
+    expect(recovered).toMatchObject({ document: null, recovery: { restored: false } });
+    await expect(fs.readFile(path.join(connection.repositoryPath, ...recovered.recovery!.backupPath.split('/')), 'utf8')).resolves.toBe(damaged);
+    await expect(fs.access(path.join(connection.repositoryPath, '.kanbanos', 'workspace.json'))).rejects.toThrow();
+  });
+
+  it('serializes concurrent workspace saves so Git operations cannot race', async () => {
+    const service = new GitWorkspaceService();
+    const connection = await service.createLocal('Serialized saves');
+    const first = { schemaVersion: 1, workspace: { name: 'First queued save' }, projects: [], items: {} };
+    const second = { schemaVersion: 1, workspace: { name: 'Second queued save' }, projects: [], items: {} };
+
+    const [firstResult, secondResult] = await Promise.all([service.saveWorkspace(first), service.saveWorkspace(second)]);
+
+    expect(firstResult.status).toBe('local-only');
+    expect(secondResult.status).toBe('local-only');
+    await expect(service.loadWorkspace()).resolves.toEqual(second);
+    expect(await git(connection.repositoryPath, 'rev-list', '--count', 'HEAD')).toBe('2');
+  });
+
+  it('fast-forwards clean workspaces from the remote without creating a new commit', async () => {
+    const remote = await createBareRemote('fetch-only.git');
+    const publisher = new GitWorkspaceService();
+    await publisher.createLocal('Fetch publisher');
+    await publisher.addRemote(remote);
+    const first = { schemaVersion: 1, workspace: { name: 'Initial' }, projects: [], items: {} };
+    const updated = { ...first, workspace: { name: 'Fetched update' } };
+    await expect(publisher.saveWorkspace(first)).resolves.toMatchObject({ status: 'synced' });
+
+    const reader = new GitWorkspaceService();
+    const readerConnection = await reader.connectRemote(remote);
+    await expect(publisher.saveWorkspace(updated)).resolves.toMatchObject({ status: 'synced' });
+    const remoteHead = await git(remote, 'rev-parse', 'main');
+
+    const synced = await reader.syncWorkspace();
+
+    expect(synced).toMatchObject({ status: 'synced', document: updated });
+    expect(await git(readerConnection.repositoryPath, 'rev-parse', 'HEAD')).toBe(remoteHead);
+    expect(await git(readerConnection.repositoryPath, 'rev-list', '--count', 'HEAD')).toBe('2');
+    expect(await git(remote, 'rev-parse', 'main')).toBe(remoteHead);
+  });
+
   it('imports files and folders, resolves only managed paths, and removes stored copies', async () => {
     const service = new GitWorkspaceService();
     const connection = await service.createLocal('Attachments');
@@ -139,7 +209,7 @@ describe('Git workspace persistence', () => {
     await expect(fs.access(resolved)).rejects.toThrow();
   });
 
-  it('blocks oversized attachments before they can be copied or pushed, while allowing a local file reference', async () => {
+  it('keeps oversized attachments local, ignores them, and recovers sync history', async () => {
     const remote = await createBareRemote('attachment-limit.git');
     const service = new GitWorkspaceService();
     const connection = await service.createLocal('Attachment limit');
@@ -169,12 +239,39 @@ describe('Git workspace persistence', () => {
     await expect(service.saveWorkspace(referenceDocument)).resolves.toMatchObject({ status: 'synced' });
     await expect(service.loadWorkspace()).resolves.toEqual(referenceDocument);
 
-    const storedOversized = path.join(connection.repositoryPath, '.kanbanos', 'content', 'attachments', 'legacy', 'large-video.mp4');
+    const legacyId = '20000000-0000-4000-8000-000000000001';
+    const legacyRelativePath = `.kanbanos/content/attachments/${legacyId}/large-video.mp4`;
+    const storedOversized = path.join(connection.repositoryPath, ...legacyRelativePath.split('/'));
     await fs.mkdir(path.dirname(storedOversized), { recursive: true });
     await fs.copyFile(source, storedOversized);
-    const blocked = await service.saveWorkspace({ ...document, workspace: { name: 'Blocked oversized attachment' } });
-    expect(blocked).toMatchObject({ status: 'error', message: expect.stringContaining('over 100 MiB') });
-    expect(await git(remote, 'rev-list', '--count', 'main')).toBe('2');
+    await git(connection.repositoryPath, 'add', '-f', '--', legacyRelativePath);
+    await git(connection.repositoryPath, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'Legacy oversized attachment');
+
+    const recovered = await service.saveWorkspace({
+      ...referenceDocument,
+      resources: {
+        attachments: {
+          [reference.id]: reference,
+          [legacyId]: {
+            id: legacyId,
+            name: 'large-video.mp4',
+            kind: 'file',
+            relativePath: legacyRelativePath,
+            sizeBytes: MAX_SYNCED_ATTACHMENT_BYTES + 1,
+            fileCount: 1,
+            createdAt: '2027-01-01T00:00:00.000Z',
+          },
+        },
+      },
+    });
+    expect(recovered).toMatchObject({ status: 'synced', message: expect.stringContaining('kept locally and excluded') });
+    await expect(fs.access(storedOversized)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(connection.repositoryPath, '.kanbanos', '.gitignore'), 'utf8')).resolves.toContain(`/content/attachments/${legacyId}/large-video.mp4`);
+    expect(await git(remote, 'ls-tree', '-r', '--name-only', 'main', '--', '.kanbanos/content/attachments'))
+      .not.toContain(legacyRelativePath);
+    expect((await service.loadWorkspace() as { resources: { attachments: Record<string, { kind: string; localPath?: string }> } }).resources.attachments[legacyId])
+      .toMatchObject({ kind: 'reference', localPath: storedOversized });
+    expect(await git(remote, 'rev-list', '--count', 'main')).toBe('3');
   });
 
   it.skipIf(process.platform === 'win32')('rejects attachment paths that escape through repository symlinks', async () => {
@@ -394,9 +491,11 @@ describe('Git workspace persistence', () => {
 
     const blockedSave = await secondDevice.saveWorkspace({ ...secondEdit, workspace: { name: 'Must not overwrite conflicts' } });
     expect(blockedSave).toMatchObject({ status: 'conflict', message: 'Choose which version to keep before saving again.' });
+    const remoteHead = await git(remote, 'rev-parse', 'main');
     const resolved = await secondDevice.resolveConflicts('remote');
 
-    expect(resolved.status).toBe('synced');
+    expect(resolved).toMatchObject({ status: 'synced', message: 'Repository version selected and workspace synced.' });
+    expect(await git(remote, 'rev-parse', 'main')).toBe(remoteHead);
     await expect(secondDevice.loadWorkspace()).resolves.toEqual(firstEdit);
     await expect(fs.readFile(secondAttachmentPath, 'utf8')).resolves.toBe('attachment from first device');
     expect(await git(secondConnection.repositoryPath, 'diff', '--name-only', '--diff-filter=U')).toBe('');

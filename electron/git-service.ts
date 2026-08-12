@@ -3,6 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { DiagnosticsLog } from './diagnostics';
+
+export const diagnostics = new DiagnosticsLog(() => app.getPath('userData'));
 
 const DATA_DIRECTORY = '.kanbanos';
 const WORKSPACE_FILE = `${DATA_DIRECTORY}/workspace.json`;
@@ -70,6 +73,14 @@ export type SaveResult = {
   document?: unknown;
 };
 
+export type WorkspaceLoadResult = {
+  document: unknown | null;
+  recovery?: {
+    backupPath: string;
+    restored: boolean;
+  };
+};
+
 export type ImportedAttachment = {
   id: string;
   name: string;
@@ -82,6 +93,13 @@ export type ImportedAttachment = {
 };
 
 type AttachmentStats = Pick<ImportedAttachment, 'kind' | 'sizeBytes' | 'fileCount'>;
+
+function redactDiagnostic(value: string): string {
+  return value
+    .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1[redacted]@')
+    .replace(/((?:token|password|access_token)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/authorization:\s*[^\r\n]+/gi, 'Authorization: [redacted]');
+}
 
 function runGit(
   cwd: string,
@@ -135,8 +153,14 @@ function runGit(
       if (stderrBytes > maxOutputBytes) outputTruncated = true;
     });
     child.on('error', reject);
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       const result = { stdout: stdout.trim(), stderr: stderr.trim(), code: code ?? 1, outputTruncated };
+      await diagnostics.record({
+        level: result.code === 0 ? 'info' : 'error',
+        scope: 'git',
+        message: `git ${args.map(redactDiagnostic).join(' ')} exited with code ${result.code}.`,
+        ...(result.code !== 0 ? { details: redactDiagnostic(result.stderr || result.stdout) } : {}),
+      });
       if (result.code !== 0 && !allowFailure) {
         reject(new Error(result.stderr || result.stdout || `Git exited with code ${result.code}`));
       } else {
@@ -199,25 +223,58 @@ async function inspectAttachmentSource(source: string): Promise<AttachmentStats>
   return { kind: 'folder', sizeBytes, fileCount };
 }
 
-async function hasOversizedStoredAttachment(cwd: string): Promise<boolean> {
+async function oversizedStoredAttachmentPaths(cwd: string): Promise<string[]> {
   const root = path.join(cwd, ATTACHMENTS_DIRECTORY);
-  const visit = async (directory: string): Promise<boolean> => {
+  const oversized: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
     let entries: import('node:fs').Dirent[];
     try {
       entries = await fs.readdir(directory, { withFileTypes: true });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
       throw error;
     }
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       const target = path.join(directory, entry.name);
-      if (entry.isDirectory() && await visit(target)) return true;
-      if (entry.isFile() && (await fs.stat(target)).size > MAX_SYNCED_ATTACHMENT_BYTES) return true;
+      if (entry.isDirectory()) {
+        await visit(target);
+        continue;
+      }
+      if (!entry.isFile() || (await fs.stat(target)).size <= MAX_SYNCED_ATTACHMENT_BYTES) continue;
+      const relativePath = path.relative(cwd, target);
+      const tracked = await runGit(cwd, ['ls-files', '--error-unmatch', '--', relativePath], true);
+      if (tracked.code === 0) {
+        oversized.push(target);
+        continue;
+      }
+      const ignored = await runGit(cwd, ['check-ignore', '--quiet', '--', relativePath], true);
+      if (ignored.code !== 0) oversized.push(target);
     }
-    return false;
   };
-  return visit(root);
+  await visit(root);
+  return oversized;
+}
+
+function convertOversizedAttachmentsToReferences(document: unknown, cwd: string, oversizedPaths: string[]): unknown {
+  if (!document || typeof document !== 'object') return document;
+  const next = structuredClone(document) as { resources?: { attachments?: Record<string, unknown> } };
+  const attachments = next.resources?.attachments;
+  if (!attachments || typeof attachments !== 'object') return next;
+  for (const attachment of Object.values(attachments)) {
+    if (!attachment || typeof attachment !== 'object') continue;
+    const candidate = attachment as Record<string, unknown>;
+    if (candidate.kind === 'reference' || typeof candidate.relativePath !== 'string') continue;
+    const attachmentPath = path.resolve(cwd, candidate.relativePath);
+    const includesOversizedFile = oversizedPaths.some((oversizedPath) =>
+      oversizedPath === attachmentPath || oversizedPath.startsWith(`${attachmentPath}${path.sep}`),
+    );
+    if (!includesOversizedFile) continue;
+    candidate.kind = 'reference';
+    candidate.localPath = attachmentPath;
+    candidate.relativePath = '';
+  }
+  return next;
 }
 
 async function hasOversizedUnpushedAttachment(cwd: string, remoteBranch: string | null): Promise<boolean> {
@@ -325,6 +382,7 @@ function friendlyGitError(error: unknown, operation: 'read' | 'write' = 'read'):
 export class GitWorkspaceService {
   private connection: RepositoryConnection | null = null;
   private sessionCredentials = new Map<string, GitCredentials>();
+  private operationTail: Promise<void> = Promise.resolve();
 
   private get settingsPath(): string {
     return path.join(app.getPath('userData'), SETTINGS_FILE);
@@ -521,13 +579,65 @@ export class GitWorkspaceService {
     return readJson(path.join(repository.repositoryPath, WORKSPACE_FILE));
   }
 
-  async saveWorkspace(document: unknown): Promise<SaveResult> {
+  async loadWorkspaceForApp(): Promise<WorkspaceLoadResult> {
     const repository = this.requireConnection();
-    const cwd = repository.repositoryPath;
-    if (await hasOversizedStoredAttachment(cwd)) {
-      return { status: 'error', message: UNSYNCABLE_ATTACHMENT_ERROR, document };
+    const workspacePath = path.join(repository.repositoryPath, WORKSPACE_FILE);
+    let raw: string;
+    try {
+      raw = await fs.readFile(workspacePath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { document: null };
+      throw error;
     }
 
+    try {
+      return { document: JSON.parse(raw) as unknown };
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      const recoveryDirectory = path.join(repository.repositoryPath, DATA_DIRECTORY, 'recovery');
+      const backupName = `workspace-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.json`;
+      const backupPath = path.join(recoveryDirectory, backupName);
+      await fs.mkdir(recoveryDirectory, { recursive: true });
+      await fs.writeFile(backupPath, raw, 'utf8');
+      await this.ensureIgnoreEntry(path.join(repository.repositoryPath, CREDENTIALS_IGNORE_FILE), '/recovery/');
+
+      let document: unknown | null = null;
+      let restored = false;
+      const committed = await runGit(repository.repositoryPath, ['show', `HEAD:${WORKSPACE_FILE}`], true);
+      if (committed.code === 0 && committed.stdout) {
+        try {
+          document = JSON.parse(committed.stdout) as unknown;
+          restored = true;
+          await fs.writeFile(workspacePath, `${committed.stdout}\n`, 'utf8');
+        } catch {
+          // A manually committed malformed version cannot be restored automatically.
+        }
+      }
+      if (!restored) await fs.rm(workspacePath, { force: true });
+
+      await diagnostics.record({
+        level: 'error',
+        scope: 'workspace',
+        message: 'Invalid workspace JSON was backed up before recovery.',
+        details: error.message,
+      });
+      return {
+        document,
+        recovery: {
+          backupPath: path.relative(repository.repositoryPath, backupPath).split(path.sep).join('/'),
+          restored,
+        },
+      };
+    }
+  }
+
+  async saveWorkspace(document: unknown): Promise<SaveResult> {
+    return this.withGitOperation(() => this.saveWorkspaceInternal(document));
+  }
+
+  private async saveWorkspaceInternal(document: unknown): Promise<SaveResult> {
+    const repository = this.requireConnection();
+    const cwd = repository.repositoryPath;
     const unresolved = await this.listConflicts(cwd);
     if (unresolved.length > 0) {
       return {
@@ -537,16 +647,41 @@ export class GitWorkspaceService {
       };
     }
 
+    // Fetch before writing the in-memory document. A subsequent three-way merge
+    // can then compare the user's change with the freshest remote base.
+    const branch = await this.currentBranch(cwd);
+    let remote: Awaited<ReturnType<GitWorkspaceService['getRemoteAccess']>> = null;
+    let remoteBranch: string | null = null;
+    let remoteFailure: unknown | null = null;
+    try {
+      remote = await this.getRemoteAccess(cwd);
+      if (remote) {
+        const fetched = await runGit(cwd, ['fetch', 'origin'], true, remote.credentials);
+        if (fetched.code !== 0) remoteFailure = new Error(fetched.stderr || fetched.stdout);
+        else remoteBranch = await this.findRemoteBranch(cwd, branch);
+      }
+    } catch (error) {
+      remoteFailure = error;
+    }
+
+    const oversizedAttachments = await oversizedStoredAttachmentPaths(cwd);
+    const excludedOversizedAttachments = oversizedAttachments.length > 0;
+    const documentToSave = excludedOversizedAttachments
+      ? convertOversizedAttachmentsToReferences(document, cwd, oversizedAttachments)
+      : document;
+
     const dataDirectory = path.join(cwd, DATA_DIRECTORY);
     const destination = path.join(cwd, WORKSPACE_FILE);
     await fs.mkdir(dataDirectory, { recursive: true });
     const temporary = `${destination}.tmp`;
-    await fs.writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
+    await fs.writeFile(temporary, `${JSON.stringify(documentToSave, null, 2)}\n`, 'utf8');
     await fs.rename(temporary, destination);
 
     try {
       if (await exists(this.credentialsPath(cwd))) await this.ensureCredentialFileIgnored(cwd);
+      if (excludedOversizedAttachments) await this.excludeOversizedAttachments(cwd, oversizedAttachments);
       await runGit(cwd, ['add', '-A', '--', DATA_DIRECTORY]);
+      if (excludedOversizedAttachments) await this.excludeOversizedAttachments(cwd, oversizedAttachments);
       const changed = await runGit(cwd, ['diff', '--cached', '--quiet', '--', DATA_DIRECTORY], true);
       if (changed.code !== 0) {
         await this.commit(
@@ -556,29 +691,25 @@ export class GitWorkspaceService {
         );
       }
 
-      const branch = await this.currentBranch(cwd);
-      const remote = await this.getRemoteAccess(cwd);
       if (!remote) {
         return {
           status: 'local-only',
-          message: 'Saved to the local Git repository.',
+          message: excludedOversizedAttachments
+            ? 'Large attachments were kept locally and will be excluded from future remote sync.'
+            : 'Saved to the local Git repository.',
           commit: await this.head(cwd),
           document: await this.loadWorkspace(),
         };
       }
-
-      const fetched = await runGit(cwd, ['fetch', 'origin'], true, remote.credentials);
-      if (fetched.code !== 0) {
+      if (remoteFailure) {
         return {
           status: 'error',
-          message: friendlyGitError(new Error(fetched.stderr || fetched.stdout)),
+          message: friendlyGitError(remoteFailure),
           commit: await this.head(cwd),
           document: await this.loadWorkspace(),
         };
       }
 
-      await runGit(cwd, ['remote', 'set-head', 'origin', '--auto'], true, remote.credentials);
-      const remoteBranch = await this.findRemoteBranch(cwd, branch);
       if (remoteBranch) {
         const merged = await runGit(
           cwd,
@@ -600,12 +731,7 @@ export class GitWorkspaceService {
 
       const pushRef = remoteBranch && remoteBranch !== branch ? `${branch}:${remoteBranch}` : branch;
       if (await hasOversizedUnpushedAttachment(cwd, remoteBranch)) {
-        return {
-          status: 'error',
-          message: UNSYNCABLE_ATTACHMENT_ERROR,
-          commit: await this.head(cwd),
-          document: await this.loadWorkspace(),
-        };
+        await this.rewriteUnpushedWorkspaceHistory(cwd, branch, remoteBranch);
       }
       const pushed = await runGit(cwd, ['push', '-u', 'origin', pushRef], true, remote.credentials);
       if (pushed.code !== 0) {
@@ -619,7 +745,9 @@ export class GitWorkspaceService {
 
       return {
         status: 'synced',
-        message: 'Everything is saved and in sync.',
+        message: excludedOversizedAttachments
+          ? 'Large attachments were kept locally and excluded from remote sync. Everything else is in sync.'
+          : 'Everything is saved and in sync.',
         commit: await this.head(cwd),
         document: await this.loadWorkspace(),
       };
@@ -627,16 +755,133 @@ export class GitWorkspaceService {
       return {
         status: 'error',
         message: friendlyGitError(error),
-        document,
+        document: documentToSave,
       };
     }
   }
 
+  async syncWorkspace(): Promise<SaveResult> {
+    return this.withGitOperation(() => this.syncWorkspaceInternal());
+  }
+
+  private async syncWorkspaceInternal(): Promise<SaveResult> {
+    const repository = this.requireConnection();
+    const cwd = repository.repositoryPath;
+    const unresolved = await this.listConflicts(cwd);
+    if (unresolved.length > 0) {
+      return {
+        status: 'conflict',
+        message: 'Choose which version to keep before saving again.',
+        conflicts: await this.describeConflicts(cwd, unresolved),
+      };
+    }
+
+    const remote = await this.getRemoteAccess(cwd);
+    if (!remote) {
+      return {
+        status: 'local-only',
+        message: 'Saved to the local Git repository.',
+        commit: await this.head(cwd),
+        document: await this.loadWorkspace(),
+      };
+    }
+    const fetched = await runGit(cwd, ['fetch', 'origin'], true, remote.credentials);
+    if (fetched.code !== 0) {
+      return {
+        status: 'error',
+        message: friendlyGitError(new Error(fetched.stderr || fetched.stdout)),
+        commit: await this.head(cwd),
+        document: await this.loadWorkspace(),
+      };
+    }
+
+    const branch = await this.currentBranch(cwd);
+    const remoteBranch = await this.findRemoteBranch(cwd, branch);
+    if (!remoteBranch) {
+      return {
+        status: 'synced',
+        message: 'Everything is saved and in sync.',
+        commit: await this.head(cwd),
+        document: await this.loadWorkspace(),
+      };
+    }
+
+    const remoteRef = `origin/${remoteBranch}`;
+    const [head, remoteHead] = await Promise.all([
+      runGit(cwd, ['rev-parse', 'HEAD'], true),
+      runGit(cwd, ['rev-parse', remoteRef], true),
+    ]);
+    if (head.code !== 0 || remoteHead.code !== 0) {
+      return {
+        status: 'error',
+        message: 'Save your local workspace changes before syncing remote updates.',
+        document: await this.loadWorkspace(),
+      };
+    }
+    if (head.stdout === remoteHead.stdout) {
+      return {
+        status: 'synced',
+        message: 'Everything is saved and in sync.',
+        commit: await this.head(cwd),
+        document: await this.loadWorkspace(),
+      };
+    }
+
+    const workingChanges = await runGit(cwd, ['status', '--porcelain', '--', DATA_DIRECTORY], true);
+    if (workingChanges.stdout) {
+      return {
+        status: 'error',
+        message: 'Save your local workspace changes before syncing remote updates.',
+        commit: await this.head(cwd),
+        document: await this.loadWorkspace(),
+      };
+    }
+    const canFastForward = await runGit(cwd, ['merge-base', '--is-ancestor', 'HEAD', remoteRef], true);
+    if (canFastForward.code !== 0) {
+      return {
+        status: 'error',
+        message: 'Save your local workspace changes before syncing remote updates.',
+        commit: await this.head(cwd),
+        document: await this.loadWorkspace(),
+      };
+    }
+    await runGit(cwd, ['merge', '--ff-only', remoteRef]);
+    return {
+      status: 'synced',
+      message: 'Everything is saved and in sync.',
+      commit: await this.head(cwd),
+      document: await this.loadWorkspace(),
+    };
+  }
+
   async resolveConflicts(strategy: 'local' | 'remote'): Promise<SaveResult> {
+    return this.withGitOperation(() => this.resolveConflictsInternal(strategy));
+  }
+
+  private async resolveConflictsInternal(strategy: 'local' | 'remote'): Promise<SaveResult> {
     const repository = this.requireConnection();
     const cwd = repository.repositoryPath;
     const conflicts = await this.listConflicts(cwd);
     if (conflicts.length === 0) throw new Error('There are no conflicts to resolve.');
+
+    if (strategy === 'remote') {
+      const remote = await this.getRemoteAccess(cwd);
+      const fetched = await runGit(cwd, ['fetch', 'origin'], true, remote?.credentials);
+      if (fetched.code !== 0) {
+        return { status: 'error', message: friendlyGitError(new Error(fetched.stderr || fetched.stdout)), document: await this.loadWorkspace() };
+      }
+      const branch = await this.currentBranch(cwd);
+      const remoteBranch = await this.findRemoteBranch(cwd, branch);
+      if (!remoteBranch) return { status: 'error', message: 'The repository does not have a version to use yet.', document: await this.loadWorkspace() };
+      await runGit(cwd, ['merge', '--abort'], true);
+      await runGit(cwd, ['reset', '--hard', `origin/${remoteBranch}`]);
+      return {
+        status: 'synced',
+        message: 'Repository version selected and workspace synced.',
+        commit: await this.head(cwd),
+        document: await this.loadWorkspace(),
+      };
+    }
 
     const checkoutFlag = strategy === 'local' ? '--ours' : '--theirs';
     const selectedStage = strategy === 'local' ? '2' : '3';
@@ -848,6 +1093,38 @@ export class GitWorkspaceService {
     await fs.writeFile(target, `${content}${separator}${entry}\n`, 'utf8');
   }
 
+  private async excludeOversizedAttachments(repositoryPath: string, oversizedPaths: string[]): Promise<void> {
+    const dataDirectory = path.join(repositoryPath, DATA_DIRECTORY);
+    const relativePaths = oversizedPaths.map((target) => path.relative(repositoryPath, target).split(path.sep).join('/'));
+    for (const target of oversizedPaths) {
+      const relativeToDataDirectory = path.relative(dataDirectory, target).split(path.sep).join('/');
+      await this.ensureIgnoreEntry(path.join(repositoryPath, CREDENTIALS_IGNORE_FILE), `/${relativeToDataDirectory}`);
+    }
+    await runGit(repositoryPath, ['rm', '--cached', '--force', '--ignore-unmatch', '--', ...relativePaths], true);
+    await diagnostics.record({
+      level: 'info',
+      scope: 'attachments',
+      message: 'Oversized attachments were kept locally and excluded from Git sync.',
+      details: relativePaths.join(', '),
+    });
+  }
+
+  private async rewriteUnpushedWorkspaceHistory(cwd: string, branch: string, remoteBranch: string | null): Promise<void> {
+    const message = 'Recover workspace · exclude oversized attachments';
+    if (remoteBranch) {
+      await runGit(cwd, ['reset', '--soft', `origin/${remoteBranch}`]);
+      const stillTrackedOversizedAttachments = await oversizedStoredAttachmentPaths(cwd);
+      if (stillTrackedOversizedAttachments.length > 0) await this.excludeOversizedAttachments(cwd, stillTrackedOversizedAttachments);
+      const changed = await runGit(cwd, ['diff', '--cached', '--quiet', '--', DATA_DIRECTORY], true);
+      if (changed.code !== 0) await runGit(cwd, [...GIT_IDENTITY_ARGS, 'commit', '-m', message]);
+      return;
+    }
+
+    const tree = await runGit(cwd, ['write-tree']);
+    const commit = await runGit(cwd, [...GIT_IDENTITY_ARGS, 'commit-tree', tree.stdout, '-m', message]);
+    await runGit(cwd, ['update-ref', `refs/heads/${branch}`, commit.stdout]);
+  }
+
   private async ensureCredentialFileIgnored(repositoryPath: string): Promise<void> {
     await this.ensureIgnoreEntry(
       path.join(repositoryPath, CREDENTIALS_IGNORE_FILE),
@@ -1034,6 +1311,18 @@ export class GitWorkspaceService {
   private requireConnection(): RepositoryConnection {
     if (!this.connection) throw new Error('Connect a Git repository first.');
     return this.connection;
+  }
+
+  private async withGitOperation<T>(operation: () => Promise<T>): Promise<T> {
+    let release: (() => void) | undefined;
+    const previous = this.operationTail;
+    this.operationTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release?.();
+    }
   }
 
   private async commit(cwd: string, message: string, files?: string[]): Promise<void> {

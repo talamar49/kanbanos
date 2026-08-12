@@ -146,8 +146,10 @@ describe('remote and conflict workflows', () => {
 
     expect(screen.getByText('2 tasks')).toBeInTheDocument();
     expect(screen.getByText('2 projects')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /Keep my version/ }));
-    await waitFor(() => expect(onResolve).toHaveBeenCalledWith('local'));
+    expect(screen.getByText('Recommended')).toBeInTheDocument();
+    expect(document.querySelector('.conflict-modal footer')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Use repository version' }));
+    await waitFor(() => expect(onResolve).toHaveBeenCalledWith('remote'));
   });
 });
 
