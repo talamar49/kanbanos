@@ -280,8 +280,37 @@ describe('mobile Git workspace', () => {
     const recovered = await current.loadWorkspaceForApp();
 
     expect(recovered).toMatchObject({ document: savedDocument, recovery: { restored: true } });
-    await expect(current.fs.promises.readFile(`${connection.repositoryPath}/${recovered.recovery!.backupPath}`, 'utf8')).resolves.toBe(damaged);
+    await expect(current.fs.promises.readFile(`${connection.repositoryPath}/${recovered.recovery!.backupPath}/workspace.json`, 'utf8')).resolves.toBe(damaged);
     await expect(current.loadWorkspace()).resolves.toEqual(savedDocument);
+  });
+
+  it('repairs changed and missing managed files from the last saved version', async () => {
+    const current = service(`mobile-managed-recovery-${crypto.randomUUID()}`).value;
+    const connection = await current.createLocal('Managed recovery');
+    const modulePath = '.kanbanos/content/modules/layout.json';
+    const attachmentPath = '.kanbanos/content/attachments/shared/brief.bin';
+    const fs = current.fs.promises;
+    await fs.mkdir(`${connection.repositoryPath}/.kanbanos`).catch(() => undefined);
+    await fs.mkdir(`${connection.repositoryPath}/.kanbanos/content`).catch(() => undefined);
+    await fs.mkdir(`${connection.repositoryPath}/.kanbanos/content/modules`).catch(() => undefined);
+    await fs.mkdir(`${connection.repositoryPath}/.kanbanos/content/attachments`).catch(() => undefined);
+    await fs.mkdir(`${connection.repositoryPath}/.kanbanos/content/attachments/shared`).catch(() => undefined);
+    await fs.writeFile(`${connection.repositoryPath}/${modulePath}`, '{"layout":"board"}\n');
+    await fs.writeFile(`${connection.repositoryPath}/${attachmentPath}`, new Uint8Array([0, 1, 2, 3]));
+    const document = { version: 4, workspace: { name: 'Recovered files' } };
+    await current.saveWorkspace(document);
+
+    await fs.writeFile(`${connection.repositoryPath}/${attachmentPath}`, new Uint8Array([9, 9, 9]));
+    await fs.unlink(`${connection.repositoryPath}/${modulePath}`);
+    const recovered = await current.loadWorkspaceForApp();
+
+    expect(recovered).toMatchObject({
+      document,
+      recovery: { restored: true, repairedPaths: expect.arrayContaining([attachmentPath, modulePath]) },
+    });
+    expect(Array.from(await fs.readFile(`${connection.repositoryPath}/${attachmentPath}`))).toEqual([0, 1, 2, 3]);
+    await expect(fs.readFile(`${connection.repositoryPath}/${modulePath}`, 'utf8')).resolves.toBe('{"layout":"board"}\n');
+    expect(Array.from(await fs.readFile(`${connection.repositoryPath}/${recovered.recovery!.backupPath!}/content/attachments/shared/brief.bin`))).toEqual([9, 9, 9]);
   });
 
   it('imports, previews, exports, and removes mobile attachments', async () => {

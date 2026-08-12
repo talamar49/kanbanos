@@ -9,6 +9,8 @@ export const diagnostics = new DiagnosticsLog(() => app.getPath('userData'));
 
 const DATA_DIRECTORY = '.kanbanos';
 const WORKSPACE_FILE = `${DATA_DIRECTORY}/workspace.json`;
+const RECOVERY_DIRECTORY = `${DATA_DIRECTORY}/recovery`;
+const RECOVERY_IGNORE_ENTRY = `/${RECOVERY_DIRECTORY}/`;
 const ATTACHMENTS_DIRECTORY = `${DATA_DIRECTORY}/content/attachments`;
 const EMPTY_FOLDER_MARKER = '.kanbanos-folder';
 const SETTINGS_FILE = 'connection.json';
@@ -76,8 +78,9 @@ export type SaveResult = {
 export type WorkspaceLoadResult = {
   document: unknown | null;
   recovery?: {
-    backupPath: string;
+    backupPath?: string;
     restored: boolean;
+    repairedPaths?: string[];
   };
 };
 
@@ -580,26 +583,31 @@ export class GitWorkspaceService {
   }
 
   async loadWorkspaceForApp(): Promise<WorkspaceLoadResult> {
+    return this.withGitOperation(() => this.loadWorkspaceForAppInternal());
+  }
+
+  private async loadWorkspaceForAppInternal(): Promise<WorkspaceLoadResult> {
     const repository = this.requireConnection();
+    const repaired = await this.repairManagedFiles(repository.repositoryPath);
     const workspacePath = path.join(repository.repositoryPath, WORKSPACE_FILE);
     let raw: string;
     try {
       raw = await fs.readFile(workspacePath, 'utf8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { document: null };
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { document: null, ...(repaired ? { recovery: repaired } : {}) };
       throw error;
     }
 
     try {
-      return { document: JSON.parse(raw) as unknown };
+      return { document: JSON.parse(raw) as unknown, ...(repaired ? { recovery: repaired } : {}) };
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
-      const recoveryDirectory = path.join(repository.repositoryPath, DATA_DIRECTORY, 'recovery');
+      const recoveryDirectory = path.join(repository.repositoryPath, RECOVERY_DIRECTORY);
       const backupName = `workspace-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}.json`;
       const backupPath = path.join(recoveryDirectory, backupName);
+      await this.ensureRecoveryDirectoryIgnored(repository.repositoryPath);
       await fs.mkdir(recoveryDirectory, { recursive: true });
       await fs.writeFile(backupPath, raw, 'utf8');
-      await this.ensureIgnoreEntry(path.join(repository.repositoryPath, CREDENTIALS_IGNORE_FILE), '/recovery/');
 
       let document: unknown | null = null;
       let restored = false;
@@ -1091,6 +1099,58 @@ export class GitWorkspaceService {
     if (entries.includes(entry)) return;
     const separator = content && !content.endsWith('\n') ? '\n' : '';
     await fs.writeFile(target, `${content}${separator}${entry}\n`, 'utf8');
+  }
+
+  private async repairManagedFiles(repositoryPath: string): Promise<WorkspaceLoadResult['recovery'] | undefined> {
+    const head = await runGit(repositoryPath, ['rev-parse', '--verify', 'HEAD'], true);
+    if (head.code !== 0) return undefined;
+    const changed = await runGit(repositoryPath, ['diff', '--name-only', '--no-renames', 'HEAD', '--', DATA_DIRECTORY], true);
+    const paths = changed.stdout
+      .split(/\r?\n/)
+      .filter((filepath) => filepath.startsWith(`${DATA_DIRECTORY}/`)
+        && !filepath.startsWith(`${RECOVERY_DIRECTORY}/`)
+        && filepath !== CREDENTIALS_FILE);
+    if (paths.length === 0) return undefined;
+
+    const recoveryDirectory = path.join(repositoryPath, RECOVERY_DIRECTORY, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}`);
+    await this.ensureRecoveryDirectoryIgnored(repositoryPath);
+    const backupPaths: string[] = [];
+    for (const filepath of paths) {
+      const target = path.resolve(repositoryPath, filepath);
+      const root = path.resolve(repositoryPath, DATA_DIRECTORY);
+      if (!target.startsWith(`${root}${path.sep}`)) continue;
+      try {
+        const stats = await fs.lstat(target);
+        const backup = path.join(recoveryDirectory, path.relative(root, target));
+        await fs.mkdir(path.dirname(backup), { recursive: true });
+        await fs.cp(target, backup, { recursive: stats.isDirectory(), dereference: false, force: true });
+        backupPaths.push(filepath);
+        if (stats.isDirectory() || stats.isSymbolicLink()) await fs.rm(target, { recursive: true, force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+
+    await runGit(repositoryPath, ['checkout', 'HEAD', '--', ...paths]);
+    const backupPath = backupPaths.length > 0
+      ? path.relative(repositoryPath, recoveryDirectory).split(path.sep).join('/')
+      : undefined;
+    await diagnostics.record({
+      level: 'error',
+      scope: 'workspace',
+      message: 'Damaged managed workspace files were restored from the last saved version.',
+      details: paths.join(', '),
+    });
+    return { restored: true, repairedPaths: paths, ...(backupPath ? { backupPath } : {}) };
+  }
+
+  private async ensureRecoveryDirectoryIgnored(repositoryPath: string): Promise<void> {
+    const gitExclude = await runGit(repositoryPath, ['rev-parse', '--git-path', 'info/exclude'], true);
+    if (gitExclude.code !== 0 || !gitExclude.stdout) return;
+    const excludePath = path.isAbsolute(gitExclude.stdout)
+      ? gitExclude.stdout
+      : path.resolve(repositoryPath, gitExclude.stdout);
+    await this.ensureIgnoreEntry(excludePath, RECOVERY_IGNORE_ENTRY);
   }
 
   private async excludeOversizedAttachments(repositoryPath: string, oversizedPaths: string[]): Promise<void> {

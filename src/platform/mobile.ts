@@ -16,6 +16,7 @@ const SETTINGS_KEY = 'kanbanos.mobile.connections.v1';
 const FILE_SYSTEM_NAME = 'kanbanos-mobile-v1';
 const DATA_DIRECTORY = '.kanbanos';
 const WORKSPACE_FILE = `${DATA_DIRECTORY}/workspace.json`;
+const RECOVERY_DIRECTORY = `${DATA_DIRECTORY}/recovery`;
 const ATTACHMENTS_DIRECTORY = `${DATA_DIRECTORY}/content/attachments`;
 const MAX_IMPORT_BYTES = 300 * 1024 * 1024;
 const MAX_SYNCED_ATTACHMENT_BYTES = 100 * 1024 * 1024;
@@ -822,24 +823,28 @@ export class MobileGitWorkspaceService {
   }
 
   async loadWorkspaceForApp(): Promise<WorkspaceLoadResult> {
+    return this.withGitOperation(() => this.loadWorkspaceForAppInternal());
+  }
+
+  private async loadWorkspaceForAppInternal(): Promise<WorkspaceLoadResult> {
     const repository = this.requireConnection();
+    const repaired = await this.repairManagedFiles(repository.repositoryPath);
     const workspacePath = pathJoin(repository.repositoryPath, WORKSPACE_FILE);
     let raw: string;
     try {
       raw = await this.fs.promises.readFile(workspacePath, 'utf8') as string;
     } catch (error) {
-      if (isMissing(error)) return { document: null };
+      if (isMissing(error)) return { document: null, ...(repaired ? { recovery: repaired } : {}) };
       throw error;
     }
 
     try {
-      return { document: JSON.parse(raw) };
+      return { document: JSON.parse(raw), ...(repaired ? { recovery: repaired } : {}) };
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
       const backupPath = pathJoin(
         repository.repositoryPath,
-        DATA_DIRECTORY,
-        'recovery',
+        RECOVERY_DIRECTORY,
         `workspace-${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 10)}.json`,
       );
       await mkdirp(this.fs.promises, pathDirname(backupPath));
@@ -877,10 +882,61 @@ export class MobileGitWorkspaceService {
     }
   }
 
+  private async repairManagedFiles(dir: string): Promise<WorkspaceLoadResult['recovery'] | undefined> {
+    let head: string;
+    try {
+      head = await git.resolveRef({ fs: this.fs, dir, ref: 'HEAD' });
+    } catch {
+      return undefined;
+    }
+    const changed = (await git.statusMatrix({ fs: this.fs, dir, filepaths: [DATA_DIRECTORY] }))
+      .filter(([filepath, headStatus, workdirStatus, stageStatus]) => filepath.startsWith(`${DATA_DIRECTORY}/`)
+        && !filepath.startsWith(`${RECOVERY_DIRECTORY}/`)
+        && filepath !== `${DATA_DIRECTORY}/credentials.json`
+        && headStatus !== 0
+        && (headStatus !== workdirStatus || headStatus !== stageStatus));
+    if (changed.length === 0) return undefined;
+
+    const recoveryDirectory = pathJoin(dir, RECOVERY_DIRECTORY, `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 10)}`);
+    const backupPaths: string[] = [];
+    for (const [filepath] of changed) {
+      const target = pathJoin(dir, filepath);
+      try {
+        const bytes = await this.fs.promises.readFile(target);
+        const backup = pathJoin(recoveryDirectory, filepath.slice(`${DATA_DIRECTORY}/`.length));
+        await mkdirp(this.fs.promises, pathDirname(backup));
+        await this.fs.promises.writeFile(backup, bytes);
+        backupPaths.push(filepath);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
+      const committed = await readBlobAt(this.fs, dir, head, filepath);
+      if (!committed) continue;
+      await writeOrRemove(this.fs.promises, target, committed);
+      await git.add({ fs: this.fs, dir, filepath });
+    }
+
+    await this.recordDiagnostic({
+      level: 'error',
+      scope: 'workspace',
+      message: 'Damaged managed workspace files were restored from the last saved version.',
+      details: changed.map(([filepath]) => filepath).join(', '),
+    });
+    await this.flush();
+    const backupPath = backupPaths.length > 0
+      ? pathJoin('/', recoveryDirectory.slice(dir.length)).slice(1)
+      : undefined;
+    return {
+      restored: true,
+      repairedPaths: changed.map(([filepath]) => filepath),
+      ...(backupPath ? { backupPath } : {}),
+    };
+  }
+
   private async stageManaged(dir: string): Promise<void> {
     const matrix = await git.statusMatrix({ fs: this.fs, dir, filepaths: [DATA_DIRECTORY] });
     for (const [filepath, head, workdir] of matrix) {
-      if (filepath.startsWith(`${DATA_DIRECTORY}/recovery/`)) continue;
+      if (filepath.startsWith(`${RECOVERY_DIRECTORY}/`)) continue;
       if (workdir === 0 && head !== 0) await git.remove({ fs: this.fs, dir, filepath });
       else if (workdir !== 0) await git.add({ fs: this.fs, dir, filepath });
     }
@@ -1093,7 +1149,8 @@ export class MobileGitWorkspaceService {
       };
     }
 
-    const workingChanges = await git.statusMatrix({ fs: this.fs, dir, filepaths: [DATA_DIRECTORY] });
+    const workingChanges = (await git.statusMatrix({ fs: this.fs, dir, filepaths: [DATA_DIRECTORY] }))
+      .filter(([filepath]) => !filepath.startsWith(`${RECOVERY_DIRECTORY}/`));
     if (workingChanges.some(([, headStatus, workdirStatus, stageStatus]) => headStatus !== workdirStatus || headStatus !== stageStatus)) {
       await this.flush();
       return {

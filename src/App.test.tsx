@@ -244,6 +244,29 @@ describe('Kanbanos app integration', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('.kanbanos/recovery/workspace-2027-01-01.json');
   });
 
+  it('tells the user when managed attachments or module files were repaired', async () => {
+    const user = userEvent.setup();
+    const recent = [{ repositoryPath: '/work/file-recovery', displayName: 'File recovery workspace' }];
+    desktopApi({
+      recent,
+      loadResult: {
+        document: createEmptyWorkspace('File recovery workspace'),
+        recovery: {
+          restored: true,
+          repairedPaths: ['.kanbanos/content/modules/layout.json', '.kanbanos/content/attachments/id/brief.pdf'],
+          backupPath: '.kanbanos/recovery/2027-01-03',
+        },
+      },
+    });
+    const { render } = await import('@testing-library/react');
+    render(renderApp());
+
+    await user.click((await screen.findByText('File recovery workspace')).closest('.recent-workspace-main')!);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('repaired 2 damaged workspace files');
+    expect(screen.getByRole('alert')).toHaveTextContent('.kanbanos/recovery/2027-01-03');
+  });
+
   it('starts a fresh workspace and keeps the damaged backup when no valid version exists', async () => {
     const user = userEvent.setup();
     const recent = [{ repositoryPath: '/work/new-recovery', displayName: 'New recovery workspace' }];

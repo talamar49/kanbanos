@@ -120,13 +120,39 @@ describe('Git workspace persistence', () => {
     const recovered = await service.loadWorkspaceForApp();
 
     expect(recovered).toMatchObject({ document: savedDocument, recovery: { restored: true } });
-    expect(recovered.recovery?.backupPath).toMatch(/^\.kanbanos\/recovery\/workspace-.+\.json$/);
-    await expect(fs.readFile(path.join(connection.repositoryPath, ...recovered.recovery!.backupPath.split('/')), 'utf8')).resolves.toBe(damaged);
+    expect(recovered.recovery?.backupPath).toMatch(/^\.kanbanos\/recovery\/.+/);
+    await expect(fs.readFile(path.join(connection.repositoryPath, ...recovered.recovery!.backupPath!.split('/'), 'workspace.json'), 'utf8')).resolves.toBe(damaged);
     await expect(service.loadWorkspace()).resolves.toEqual(savedDocument);
 
     await service.saveWorkspace(savedDocument);
     expect(await git(connection.repositoryPath, 'ls-files', '--', '.kanbanos/recovery')).toBe('');
-    await expect(fs.readFile(path.join(connection.repositoryPath, '.kanbanos', '.gitignore'), 'utf8')).resolves.toContain('/recovery/');
+    await expect(fs.readFile(path.join(connection.repositoryPath, '.git', 'info', 'exclude'), 'utf8')).resolves.toContain('/.kanbanos/recovery/');
+  });
+
+  it('repairs changed and missing managed files from the last saved version', async () => {
+    const service = new GitWorkspaceService();
+    const connection = await service.createLocal('Managed file recovery');
+    const modulePath = '.kanbanos/content/modules/layout.json';
+    const attachmentPath = '.kanbanos/content/attachments/30000000-0000-4000-8000-000000000001/brief.bin';
+    await fs.mkdir(path.join(connection.repositoryPath, '.kanbanos', 'content', 'modules'), { recursive: true });
+    await fs.mkdir(path.join(connection.repositoryPath, '.kanbanos', 'content', 'attachments', '30000000-0000-4000-8000-000000000001'), { recursive: true });
+    await fs.writeFile(path.join(connection.repositoryPath, ...modulePath.split('/')), '{"layout":"board"}\n');
+    await fs.writeFile(path.join(connection.repositoryPath, ...attachmentPath.split('/')), Buffer.from([0, 1, 2, 3]));
+    const document = { schemaVersion: 1, workspace: { name: 'Recovered files' }, projects: [], items: {} };
+    await service.saveWorkspace(document);
+
+    await fs.writeFile(path.join(connection.repositoryPath, ...attachmentPath.split('/')), Buffer.from([9, 9, 9]));
+    await fs.rm(path.join(connection.repositoryPath, ...modulePath.split('/')));
+    const recovered = await service.loadWorkspaceForApp();
+
+    expect(recovered).toMatchObject({
+      document,
+      recovery: { restored: true, repairedPaths: expect.arrayContaining([attachmentPath, modulePath]) },
+    });
+    await expect(fs.readFile(path.join(connection.repositoryPath, ...attachmentPath.split('/')))).resolves.toEqual(Buffer.from([0, 1, 2, 3]));
+    await expect(fs.readFile(path.join(connection.repositoryPath, ...modulePath.split('/')), 'utf8')).resolves.toBe('{"layout":"board"}\n');
+    await expect(fs.readFile(path.join(connection.repositoryPath, ...recovered.recovery!.backupPath!.split('/'), 'content', 'attachments', '30000000-0000-4000-8000-000000000001', 'brief.bin'))).resolves.toEqual(Buffer.from([9, 9, 9]));
+    expect(await git(connection.repositoryPath, 'status', '--short', '--', '.kanbanos')).toBe('');
   });
 
   it('keeps malformed workspace JSON recoverable when there is no saved version yet', async () => {

@@ -163,12 +163,29 @@ export default function App() {
     }
     setBootState('ready');
     if (loaded.recovery) {
-      notify(t(
-        loaded.recovery.restored
-          ? 'We found damaged workspace data and restored your last saved version. A backup was kept at {{path}}.'
-          : 'We found damaged workspace data. A backup was kept at {{path}} and a new workspace was started.',
-        { path: loaded.recovery.backupPath },
-      ), 'error');
+      const repairedCount = loaded.recovery.repairedPaths?.length ?? 0;
+      const backupPath = loaded.recovery.backupPath ?? '.kanbanos/recovery';
+      const message = repairedCount > 0
+        ? loaded.recovery.backupPath
+          ? t(
+            repairedCount === 1
+              ? 'We repaired {{count}} damaged workspace file from the last saved version. A backup was kept at {{path}}.'
+              : 'We repaired {{count}} damaged workspace files from the last saved version. Backups were kept at {{path}}.',
+            { count: repairedCount, path: backupPath },
+          )
+          : t(
+            repairedCount === 1
+              ? 'We repaired {{count}} damaged workspace file from the last saved version.'
+              : 'We repaired {{count}} damaged workspace files from the last saved version.',
+            { count: repairedCount },
+          )
+        : t(
+          loaded.recovery.restored
+            ? 'We found damaged workspace data and restored your last saved version. A backup was kept at {{path}}.'
+            : 'We found damaged workspace data. A backup was kept at {{path}} and a new workspace was started.',
+          { path: backupPath },
+        );
+      notify(message, 'error');
     }
     recordDiagnostic('workspace', 'Workspace opened.');
   }, [notify, recordDiagnostic, t]);

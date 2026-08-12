@@ -40,8 +40,9 @@ type SaveResult = {
 type WorkspaceLoadResult = {
   document: unknown | null;
   recovery?: {
-    backupPath: string;
+    backupPath?: string;
     restored: boolean;
+    repairedPaths?: string[];
   };
 };
 
