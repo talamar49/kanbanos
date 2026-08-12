@@ -4,6 +4,22 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-12
+
+### Added
+
+- Desktop diagnostics that report workspace and Git health without exposing credentials.
+- Phone Timeline scheduling with week, month, and year views, dependencies, unscheduled work, and contained chart scrolling.
+
+### Improved
+
+- Refined compact Board, Canvas, navigation, save feedback, drag scrolling, RTL, and light/dark touch workflows while keeping complete planning features available.
+- Hardened mobile Git transport, workspace persistence, synchronization diagnostics, and conflict feedback across desktop and native runtimes.
+
+### Quality
+
+- Expanded automated coverage for diagnostics, mobile save states, compact Canvas behavior, Timeline range scrolling, and native platform persistence.
+
 ## [0.4.0] - 2026-08-11
 
 ### Added
