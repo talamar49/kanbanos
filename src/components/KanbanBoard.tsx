@@ -1,4 +1,4 @@
-import { Fragment, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   closestCorners,
@@ -264,6 +264,9 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
   const [menuPosition, setMenuPosition] = useState<ColumnMenuPosition | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [columnTitle, setColumnTitle] = useState(column.title);
+  const [editingLimit, setEditingLimit] = useState(false);
+  const [limitValue, setLimitValue] = useState('');
+  const [limitError, setLimitError] = useState(false);
   const composerRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuPopoverRef = useRef<HTMLDivElement>(null);
@@ -275,6 +278,12 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
     setMenuOpen(false);
     setRenaming(false);
   }, [aggregate]);
+
+  useEffect(() => {
+    if (menuOpen) return;
+    setEditingLimit(false);
+    setLimitError(false);
+  }, [menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -348,6 +357,24 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
 
   const assignRule = (rule: KanbanColumnRule) => {
     onAction({ type: 'setColumnRule', projectId, columnId: column.id, rule });
+  };
+
+  const openLimitEditor = () => {
+    setLimitValue(column.limit?.toString() ?? '');
+    setLimitError(false);
+    setEditingLimit(true);
+  };
+
+  const saveLimit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const clean = limitValue.trim();
+    const nextLimit = clean ? Number(clean) : undefined;
+    if (nextLimit !== undefined && (!Number.isInteger(nextLimit) || nextLimit < 1)) {
+      setLimitError(true);
+      return;
+    }
+    onAction({ type: 'updateColumn', projectId, columnId: column.id, changes: { limit: nextLimit } });
+    setMenuOpen(false);
   };
 
   const deleteColumn = () => {
@@ -438,18 +465,36 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
                     overflowY: 'auto',
                   }}
                 >
-                  <button onClick={() => { setRenaming(true); setMenuOpen(false); }}>{t('Rename column')}</button>
-                  <button onClick={() => {
-                    const value = window.prompt(t('Work-in-progress limit (leave empty for none)'), column.limit?.toString() ?? '');
-                    if (value !== null) {
-                      const limit = value.trim() ? Math.max(1, Number(value)) : undefined;
-                      if (!value.trim() || Number.isFinite(limit)) onAction({ type: 'updateColumn', projectId, columnId: column.id, changes: { limit } });
-                    }
-                    setMenuOpen(false);
-                  }}>{t('Set WIP limit')}</button>
-                  <div className="popover-separator" />
-                  <p className="column-rule-title">{t('Column behavior')}</p>
-                  <small className="column-rule-help">{t('Tell Kanbanos what this column means. Each behavior can be assigned to one column.')}</small>
+                  {editingLimit ? (
+                    <form className="wip-limit-editor" aria-label={t('Set WIP limit')} onSubmit={saveLimit} noValidate>
+                      <label>
+                        <span>{t('Work-in-progress limit (leave empty for none)')}</span>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={limitValue}
+                          aria-invalid={limitError}
+                          onChange={(event) => {
+                            setLimitValue(event.target.value);
+                            setLimitError(false);
+                          }}
+                          autoFocus
+                        />
+                      </label>
+                      {limitError && <p role="alert">{t('Enter a whole number of at least 1.')}</p>}
+                      <div className="wip-limit-actions">
+                        <button type="button" onClick={() => setEditingLimit(false)}>{t('Cancel')}</button>
+                        <button type="submit" className="button-primary">{t('Save changes')}</button>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <button onClick={() => { setRenaming(true); setMenuOpen(false); }}>{t('Rename column')}</button>
+                      <button onClick={openLimitEditor}>{t('Set WIP limit')}</button>
+                      <div className="popover-separator" />
+                      <p className="column-rule-title">{t('Column behavior')}</p>
+                      <small className="column-rule-help">{t('Tell Kanbanos what this column means. Each behavior can be assigned to one column.')}</small>
                   <button
                     className={`column-rule-option ${newTasksStartHere ? 'selected' : ''}`}
                     role="menuitemcheckbox"
@@ -478,7 +523,9 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
                     </span>
                     <b>{tasksAreCompletedHere && <Check size={14} />}</b>
                   </button>
-                  {allColumns.length > 1 && <><div className="popover-separator" /><button className="danger-option" onClick={deleteColumn}>{t('Delete column')}</button></>}
+                      {allColumns.length > 1 && <><div className="popover-separator" /><button className="danger-option" onClick={deleteColumn}>{t('Delete column')}</button></>}
+                    </>
+                  )}
                 </div>,
                 window.document.body,
               )}

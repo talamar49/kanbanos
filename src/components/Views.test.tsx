@@ -493,6 +493,56 @@ describe('board and list task management', () => {
     }));
   });
 
+  it('sets and removes a WIP limit from the in-app column editor', async () => {
+    const user = userEvent.setup();
+    const initialDocument = featureWorkspace();
+    const project = initialDocument.projects[0];
+
+    function BoardHarness() {
+      const [currentDocument, onAction] = useReducer(workspaceReducer, initialDocument);
+      return (
+        <KanbanBoard
+          document={currentDocument}
+          project={project}
+          saveState="idle"
+          dirty
+          onAction={onAction}
+          onOpenTask={vi.fn()}
+          onSave={vi.fn()}
+          onEditProject={vi.fn()}
+          onChangeView={vi.fn()}
+        />
+      );
+    }
+
+    renderWithPreferences(<BoardHarness />);
+    const plannedColumn = screen.getByRole('heading', { name: 'Planned' }).closest<HTMLElement>('.board-column')!;
+
+    await user.click(within(plannedColumn).getByRole('button', { name: 'Column options' }));
+    await user.click(screen.getByRole('button', { name: 'Set WIP limit' }));
+    const editor = screen.getByRole('form', { name: 'Set WIP limit' });
+    const limitInput = within(editor).getByRole('spinbutton', { name: 'Work-in-progress limit (leave empty for none)' });
+    expect(limitInput).toHaveValue(5);
+
+    await user.clear(limitInput);
+    await user.type(limitInput, '0');
+    await user.click(within(editor).getByRole('button', { name: 'Save changes' }));
+    expect(within(editor).getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
+    expect(within(plannedColumn).getByText('1/5')).toBeInTheDocument();
+
+    await user.clear(limitInput);
+    await user.type(limitInput, '2');
+    await user.click(within(editor).getByRole('button', { name: 'Save changes' }));
+    expect(within(plannedColumn).getByText('1/2')).toBeInTheDocument();
+
+    await user.click(within(plannedColumn).getByRole('button', { name: 'Column options' }));
+    await user.click(screen.getByRole('button', { name: 'Set WIP limit' }));
+    const updatedEditor = screen.getByRole('form', { name: 'Set WIP limit' });
+    await user.clear(within(updatedEditor).getByRole('spinbutton'));
+    await user.click(within(updatedEditor).getByRole('button', { name: 'Save changes' }));
+    expect(within(plannedColumn).queryByText('1/2')).not.toBeInTheDocument();
+  });
+
   it('keeps the column dropdown outside clipped board containers', async () => {
     const user = userEvent.setup();
     const document = featureWorkspace();

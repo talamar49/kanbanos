@@ -430,6 +430,7 @@ export const HEBREW_TRANSLATIONS: Readonly<Record<string, string>> = {
   'Rename column': 'שינוי שם העמודה',
   'Work-in-progress limit (leave empty for none)': 'מגבלת עבודה בתהליך (השאירו ריק ללא מגבלה)',
   'Set WIP limit': 'הגדרת מגבלת עבודה בתהליך',
+  'Enter a whole number of at least 1.': 'הזינו מספר שלם של 1 לפחות.',
   'Column behavior': 'התנהגות העמודה',
   'Tell Kanbanos what this column means. Each behavior can be assigned to one column.': 'הגדירו ל־Kanbanos מה משמעות העמודה. ניתן לשייך כל התנהגות לעמודה אחת.',
   'Default home for new tasks': 'מיקום ברירת המחדל למשימות חדשות',
