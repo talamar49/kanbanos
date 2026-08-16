@@ -102,22 +102,25 @@ type Props = {
   item: WorkItem;
   project?: Project;
   dragDisabled?: boolean;
+  dropPreview?: boolean;
+  compact?: boolean;
+  dragData?: Record<string, unknown>;
   subtasksCollapsed: boolean;
   onOpen: (item: WorkItem) => void;
   onUpdateSubtasks: (itemId: string, subtasks: Subtask[]) => void;
   onSetSubtasksCollapsed: (itemId: string, collapsed: boolean) => void;
 };
 
-export function TaskCard({ item, project, dragDisabled = false, subtasksCollapsed, onOpen, onUpdateSubtasks, onSetSubtasksCollapsed }: Props) {
+export function TaskCard({ item, project, dragDisabled = false, dropPreview = false, compact = false, dragData, subtasksCollapsed, onOpen, onUpdateSubtasks, onSetSubtasksCollapsed }: Props) {
   const { locale, t } = useI18n();
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [subtasksExpanded, setSubtasksExpanded] = useState(false);
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const subtaskInputRef = useRef<HTMLInputElement>(null);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: item.id,
-    data: { type: 'item', columnId: item.moduleData.kanban.columnId },
-    disabled: dragDisabled,
+    id: dropPreview ? `task-drop-preview:${item.id}` : item.id,
+    data: { type: dropPreview ? 'preview' : 'item', columnId: item.moduleData.kanban.columnId, ...dragData },
+    disabled: dragDisabled || dropPreview,
   });
   const subtaskSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -133,7 +136,7 @@ export function TaskCard({ item, project, dragDisabled = false, subtasksCollapse
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.45 : 1,
+    opacity: isDragging ? 0.45 : undefined,
     zIndex: isDragging ? 5 : undefined,
   };
 
@@ -191,11 +194,12 @@ export function TaskCard({ item, project, dragDisabled = false, subtasksCollapse
     <article
       ref={setNodeRef}
       style={style}
-      className={`task-card ${dragDisabled ? 'drag-disabled' : ''} ${isDragging ? 'dragging' : ''}`}
-      onClick={() => !isDragging && onOpen(item)}
-      aria-label={!dragDisabled ? t('Move {{name}}', { name: item.title }) : undefined}
-      {...(dragDisabled ? {} : attributes)}
-      {...(dragDisabled ? {} : listeners)}
+      className={`task-card ${compact ? 'timeline-task-card-compact' : ''} ${dragDisabled && !dropPreview ? 'drag-disabled' : ''} ${dropPreview ? 'task-drop-preview' : ''} ${isDragging ? 'dragging' : ''}`}
+      onClick={dropPreview ? undefined : () => !isDragging && onOpen(item)}
+      aria-hidden={dropPreview || undefined}
+      aria-label={!dragDisabled && !dropPreview ? t('Move {{name}}', { name: item.title }) : undefined}
+      {...(dragDisabled || dropPreview ? {} : attributes)}
+      {...(dragDisabled || dropPreview ? {} : listeners)}
     >
       {project && (
         <div className="task-project-context" style={{ color: project.color }}>
@@ -208,7 +212,7 @@ export function TaskCard({ item, project, dragDisabled = false, subtasksCollapse
         <span className="priority-edge" style={{ background: priority.color }} title={t('{{priority}} priority', { priority: t(priority.label) })} />
       )}
 
-      {item.labels.length > 0 && (
+      {!compact && item.labels.length > 0 && (
         <div className="card-labels">
           {item.labels.slice(0, 2).map((label) => (
             <span key={label} style={{ '--label-color': LABEL_COLORS[label] ?? '#76839a' } as CSSProperties}>
@@ -219,9 +223,14 @@ export function TaskCard({ item, project, dragDisabled = false, subtasksCollapse
       )}
 
       <h3>{item.title}</h3>
-      {item.description && <p className="card-description">{item.description}</p>}
+      {compact && item.subtasks.length > 0 && (
+        <span className={`compact-task-subtasks ${progress === 100 ? 'complete' : ''}`} title={`${t('Subtasks')}: ${completed}/${item.subtasks.length}`}>
+          {progress === 100 ? <Check size={13} /> : <CheckSquare2 size={13} />}{completed}/{item.subtasks.length}
+        </span>
+      )}
+      {!compact && item.description && <p className="card-description">{item.description}</p>}
 
-      {item.subtasks.length > 0 && (
+      {!compact && item.subtasks.length > 0 && (
         <div className={`card-subtask-section ${subtasksCollapsed ? 'collapsed' : ''}`}>
           <button
             type="button"
@@ -276,9 +285,9 @@ export function TaskCard({ item, project, dragDisabled = false, subtasksCollapse
         </div>
       )}
 
-      {item.subtasks.length === 0 && subtaskComposer}
+      {!compact && item.subtasks.length === 0 && subtaskComposer}
 
-      {(due || item.assignee || item.estimateMinutes || attachedResourceCount > 0) && (
+      {!compact && (due || item.assignee || item.estimateMinutes || attachedResourceCount > 0) && (
         <footer className="card-footer">
           <div className="card-footer-meta">
             {due && <span className={`due-date ${due.overdue ? 'overdue' : ''}`}><Calendar size={13} />{due.label}</span>}

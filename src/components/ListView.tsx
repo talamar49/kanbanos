@@ -14,7 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Project, TaskDraft, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
-import { PRIORITY_META } from '../domain/workspace';
+import { columnForRule, PRIORITY_META } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import { PreferencesControls } from './PreferencesControls';
 
@@ -37,8 +37,11 @@ export function ListView({ document, project, saveState, dirty, onAction, onOpen
   const { locale, t } = useI18n();
   const [search, setSearch] = useState('');
   const columns = document.modules.kanban.projects[project.id]?.columns ?? [];
-  const doneColumn = columns.find((column) => column.id === 'done' || /done|complete/i.test(column.title));
-  const firstColumn = columns[0];
+  const doneColumn = columnForRule(columns, 'completed');
+  const newTaskColumn = columnForRule(columns, 'new-task');
+  const openColumn = newTaskColumn?.id !== doneColumn?.id
+    ? newTaskColumn
+    : columns.find((column) => column.id !== doneColumn?.id);
   const columnMap = new Map(columns.map((column) => [column.id, column]));
   const items = useMemo(() => Object.values(document.items)
     .filter((item) => item.projectId === project.id)
@@ -50,14 +53,16 @@ export function ListView({ document, project, saveState, dirty, onAction, onOpen
     }), [columns, document.items, project.id, search]);
 
   const addTask = () => {
-    if (!firstColumn) return;
-    onCreateTask({ columnId: firstColumn.id });
+    if (!newTaskColumn) return;
+    onCreateTask({ columnId: newTaskColumn.id });
   };
 
   const toggleComplete = (item: WorkItem) => {
-    if (!doneColumn || !firstColumn) return;
+    if (!doneColumn) return;
     const isDone = item.moduleData.kanban.columnId === doneColumn.id;
-    onAction({ type: 'moveItem', itemId: item.id, columnId: isDone ? firstColumn.id : doneColumn.id, index: Number.MAX_SAFE_INTEGER });
+    const destination = isDone ? openColumn : doneColumn;
+    if (!destination) return;
+    onAction({ type: 'moveItem', itemId: item.id, columnId: destination.id, index: Number.MAX_SAFE_INTEGER });
   };
 
   return (

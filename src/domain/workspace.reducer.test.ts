@@ -7,9 +7,13 @@ import {
   PROJECT_COLORS,
   ROADMAP_HORIZONS,
   createCanvasConnection,
+  activeCanvasView,
+  canvasViewsForProject,
   createCanvasNode,
   createCanvasProject,
   createCanvasStroke,
+  createCanvasView,
+  columnForRule,
   createDefaultWorkspace,
   createEmptyWorkspace,
   createProject,
@@ -57,7 +61,15 @@ describe('workspace factories', () => {
     expect(CANVAS_NODE_COLORS).toHaveLength(6);
     expect(ROADMAP_HORIZONS).toEqual(['Now', 'Next', 'Later']);
     expect(Object.keys(PRIORITY_META)).toEqual(['none', 'low', 'medium', 'high', 'urgent']);
-    expect(createCanvasProject()).toEqual({ nodes: {}, connections: {}, strokes: {}, viewport: { x: 0, y: 0, zoom: 1 } });
+    expect(createCanvasProject()).toEqual({
+      name: 'Canvas 1',
+      nodes: {},
+      connections: {},
+      strokes: {},
+      viewport: { x: 0, y: 0, zoom: 1 },
+      activeViewId: 'canvas-main',
+      views: {},
+    });
   });
 
   it('creates projects, tasks, canvas objects, and strokes with safe defaults', () => {
@@ -154,6 +166,27 @@ describe('project, task, and column actions', () => {
     expect(reordered.modules.kanban.projects[projectId].columns.map((column) => column.id)).toEqual(['review', 'done', 'backlog', 'planned', 'progress']);
     expect(deleted.modules.kanban.projects[projectId].columns.some((column) => column.id === 'backlog')).toBe(false);
     expect(deleted.items[firstId].moduleData.kanban.columnId).toBe('planned');
+  });
+
+  it('keeps each column rule unique and transfers rules when a column is deleted', () => {
+    const { document, projectId } = workspaceWithTasks();
+    const assigned = workspaceReducer(document, {
+      type: 'setColumnRule',
+      projectId,
+      columnId: 'progress',
+      rule: 'completed',
+    });
+
+    expect(columnForRule(assigned.modules.kanban.projects[projectId].columns, 'completed')?.id).toBe('progress');
+    expect(assigned.modules.kanban.projects[projectId].columns.find((column) => column.id === 'done')?.rules).not.toContain('completed');
+
+    const deleted = workspaceReducer(assigned, {
+      type: 'deleteColumn',
+      projectId,
+      columnId: 'progress',
+      moveToColumnId: 'backlog',
+    });
+    expect(columnForRule(deleted.modules.kanban.projects[projectId].columns, 'completed')?.id).toBe('backlog');
   });
 
   it('moves tasks with clamped indexes and keeps other projects out of the target order', () => {
@@ -298,7 +331,7 @@ describe('preferences and normalization', () => {
         timelineLayout: 'compact' as const,
         collapsedKanbanSubtaskItemIds: [firstId, firstId, 'missing'],
       },
-    };
+    } as unknown as WorkspaceDocument;
 
     const normalized = normalizeWorkspaceDocument(legacy);
 
@@ -327,6 +360,48 @@ describe('preferences and normalization', () => {
 });
 
 describe('canvas actions', () => {
+  it('creates, switches, renames, and deletes isolated canvas views', () => {
+    const document = createEmptyWorkspace();
+    const projectId = document.projects[0].id;
+    const primaryNote = createCanvasNode('note', { x: 10, y: 20 }, { content: 'Primary idea' });
+    const withPrimaryNote = workspaceReducer(document, { type: 'canvasAddNode', projectId, node: primaryNote });
+    const secondView = createCanvasView('Launch map');
+    const withSecondView = workspaceReducer(withPrimaryNote, { type: 'canvasAddView', projectId, view: secondView });
+    const secondNote = createCanvasNode('note', { x: 80, y: 90 }, { content: 'Launch idea' });
+    const withSecondNote = workspaceReducer(withSecondView, {
+      type: 'canvasAddNode',
+      projectId,
+      canvasViewId: secondView.id,
+      node: secondNote,
+    });
+
+    const canvasProject = withSecondNote.modules.canvas.projects[projectId];
+    expect(canvasViewsForProject(canvasProject).map((view) => view.name)).toEqual(['Canvas 1', 'Launch map']);
+    expect(activeCanvasView(canvasProject).id).toBe(secondView.id);
+    expect(canvasProject.nodes[primaryNote.id]).toEqual(primaryNote);
+    expect(canvasProject.nodes[secondNote.id]).toBeUndefined();
+    expect(canvasProject.views[secondView.id].nodes[secondNote.id]).toEqual(secondNote);
+
+    const promoted = workspaceReducer(withSecondNote, { type: 'canvasDeleteView', projectId, canvasViewId: 'canvas-main' });
+    expect(promoted.modules.canvas.projects[projectId]).toMatchObject({ name: 'Launch map', activeViewId: 'canvas-main' });
+    expect(promoted.modules.canvas.projects[projectId].nodes[secondNote.id]).toEqual(secondNote);
+    expect(promoted.modules.canvas.projects[projectId].views).toEqual({});
+
+    const renamed = workspaceReducer(withSecondNote, {
+      type: 'canvasRenameView',
+      projectId,
+      canvasViewId: secondView.id,
+      name: '  Release map  ',
+    });
+    const selected = workspaceReducer(renamed, { type: 'canvasSelectView', projectId, canvasViewId: 'canvas-main' });
+    const deleted = workspaceReducer(selected, { type: 'canvasDeleteView', projectId, canvasViewId: secondView.id });
+
+    expect(renamed.modules.canvas.projects[projectId].views[secondView.id].name).toBe('Release map');
+    expect(activeCanvasView(selected.modules.canvas.projects[projectId]).nodes[primaryNote.id]).toEqual(primaryNote);
+    expect(canvasViewsForProject(deleted.modules.canvas.projects[projectId])).toHaveLength(1);
+    expect(workspaceReducer(deleted, { type: 'canvasDeleteView', projectId, canvasViewId: 'canvas-main' })).toBe(deleted);
+  });
+
   function canvasFixture() {
     const document = createEmptyWorkspace();
     const projectId = document.projects[0].id;

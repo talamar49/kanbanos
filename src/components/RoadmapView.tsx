@@ -37,7 +37,7 @@ import {
   Route,
 } from 'lucide-react';
 import type { Project, RoadmapHorizon, TaskDraft, WorkItem, WorkspaceDocument } from '../domain/types';
-import { ROADMAP_HORIZONS } from '../domain/workspace';
+import { columnForRule, ROADMAP_HORIZONS } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import { PreferencesControls } from './PreferencesControls';
 
@@ -215,7 +215,7 @@ export function RoadmapView({ document, saveState, dirty, onSave, onAddProject, 
   const progressFor = (project: Project): ProjectProgress => {
     const tasks = Object.values(document.items).filter((item) => item.projectId === project.id);
     const columns = document.modules.kanban.projects[project.id]?.columns ?? [];
-    const done = columns.find((column) => column.id === 'done' || /done|complete/i.test(column.title));
+    const done = columnForRule(columns, 'completed');
     const completed = done ? tasks.filter((item) => item.moduleData.kanban.columnId === done.id) : [];
     const upcoming = tasks
       .filter((item) => !done || item.moduleData.kanban.columnId !== done.id)
@@ -273,7 +273,7 @@ export function RoadmapView({ document, saveState, dirty, onSave, onAddProject, 
   };
   const openTasks = Object.values(document.items).filter((item) => {
     const columns = document.modules.kanban.projects[item.projectId]?.columns ?? [];
-    const done = columns.find((column) => column.id === 'done' || /done|complete/i.test(column.title));
+    const done = columnForRule(columns, 'completed');
     return !done || item.moduleData.kanban.columnId !== done.id;
   }).length;
 

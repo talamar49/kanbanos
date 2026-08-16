@@ -1022,7 +1022,7 @@ export class MobileGitWorkspaceService {
       }
       if (remoteFailure) {
         await this.flush();
-        return { status: 'error', message: friendlyGitError(remoteFailure), commit: head, document: await this.loadWorkspace() };
+        return { status: 'error', message: friendlyGitError(remoteFailure), commit: head, document: await this.loadWorkspace(), localSave: 'available', remoteSync: 'unavailable' };
       }
 
       const targetBranch = remoteBranch ?? branch;
@@ -1077,14 +1077,14 @@ export class MobileGitWorkspaceService {
       } catch (error) {
         await this.flush();
         const latest = await git.resolveRef({ fs: this.fs, dir, ref: branch });
-        return { status: 'error', message: friendlyGitError(error, 'write'), commit: latest, document: await this.loadWorkspace() };
+        return { status: 'error', message: friendlyGitError(error, 'write'), commit: latest, document: await this.loadWorkspace(), localSave: 'available', remoteSync: 'unavailable' };
       }
       await this.flush();
       const latest = await git.resolveRef({ fs: this.fs, dir, ref: branch });
       return { status: 'synced', message: 'Everything is saved and in sync.', commit: latest, document: await this.loadWorkspace() };
     } catch (error) {
       await this.flush();
-      return { status: 'error', message: friendlyGitError(error), document };
+      return { status: 'error', message: friendlyGitError(error), document, localSave: 'unavailable', remoteSync: remoteFailure ? 'unavailable' : 'available' };
     }
   }
 
@@ -1118,7 +1118,7 @@ export class MobileGitWorkspaceService {
       fetched = await git.fetch({ fs: this.fs, http: this.http, dir, remote: 'origin', onAuth: this.auth(credentials), prune: true });
     } catch (error) {
       await this.flush();
-      return { status: 'error', message: friendlyGitError(error), document: await this.loadWorkspace() };
+      return { status: 'error', message: friendlyGitError(error), document: await this.loadWorkspace(), localSave: 'available', remoteSync: 'unavailable' };
     }
 
     const branch = await git.currentBranch({ fs: this.fs, dir }) ?? 'main';
@@ -1158,6 +1158,8 @@ export class MobileGitWorkspaceService {
         message: 'Save your local workspace changes before syncing remote updates.',
         commit: head,
         document: await this.loadWorkspace(),
+        localSave: 'unavailable',
+        remoteSync: 'available',
       };
     }
     const canFastForward = await git.isDescendent({ fs: this.fs, dir, oid: remoteOid, ancestor: head });
@@ -1168,6 +1170,8 @@ export class MobileGitWorkspaceService {
         message: 'Save your local workspace changes before syncing remote updates.',
         commit: head,
         document: await this.loadWorkspace(),
+        localSave: 'unavailable',
+        remoteSync: 'available',
       };
     }
 
@@ -1198,7 +1202,7 @@ export class MobileGitWorkspaceService {
         await git.fetch({ fs: this.fs, http: this.http, dir, remote: 'origin', onAuth: this.auth(credentials), prune: true });
       } catch (error) {
         await this.flush();
-        return { status: 'error', message: friendlyGitError(error), document: await this.loadWorkspace() };
+        return { status: 'error', message: friendlyGitError(error), document: await this.loadWorkspace(), localSave: 'available', remoteSync: 'unavailable' };
       }
       let remoteOid = pending.remoteOid;
       try {
@@ -1251,6 +1255,8 @@ export class MobileGitWorkspaceService {
         message: friendlyGitError(error, 'write'),
         commit: await git.resolveRef({ fs: this.fs, dir, ref: pending.branch }),
         document: await this.loadWorkspace(),
+        localSave: 'available',
+        remoteSync: 'unavailable',
       };
     }
     await this.flush();

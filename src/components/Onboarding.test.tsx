@@ -62,6 +62,22 @@ describe('workspace onboarding', () => {
     expect(handlers.onChooseLocal).toHaveBeenCalledTimes(1);
   });
 
+  it('places recent workspaces below the startup actions without the storage note', () => {
+    const handlers = callbacks();
+    renderWithPreferences(
+      <Onboarding
+        recentWorkspaces={[{ repositoryPath: '/work/launch', displayName: 'Launch' }]}
+        {...handlers}
+      />,
+    );
+
+    const openWorkspaceButton = screen.getByRole('button', { name: /Open workspace folder/ });
+    const recentLabel = screen.getByText('Recent');
+    expect(openWorkspaceButton.compareDocumentPosition(recentLabel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText('Your work stays yours.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Workspaces live in folders you control.')).not.toBeInTheDocument();
+  });
+
   it('validates and creates a trimmed local workspace', async () => {
     const user = userEvent.setup();
     const handlers = callbacks();

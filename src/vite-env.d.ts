@@ -35,6 +35,8 @@ type SaveResult = {
   commit?: string;
   conflicts?: GitConflict[];
   document?: unknown;
+  localSave?: 'available' | 'unavailable';
+  remoteSync?: 'available' | 'unavailable';
 };
 
 type WorkspaceLoadResult = {

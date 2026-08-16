@@ -73,6 +73,8 @@ export type SaveResult = {
   commit?: string;
   conflicts?: GitConflict[];
   document?: unknown;
+  localSave?: 'available' | 'unavailable';
+  remoteSync?: 'available' | 'unavailable';
 };
 
 export type WorkspaceLoadResult = {
@@ -715,6 +717,8 @@ export class GitWorkspaceService {
           message: friendlyGitError(remoteFailure),
           commit: await this.head(cwd),
           document: await this.loadWorkspace(),
+          localSave: 'available',
+          remoteSync: 'unavailable',
         };
       }
 
@@ -748,6 +752,8 @@ export class GitWorkspaceService {
           message: friendlyGitError(new Error(pushed.stderr || pushed.stdout), 'write'),
           commit: await this.head(cwd),
           document: await this.loadWorkspace(),
+          localSave: 'available',
+          remoteSync: 'unavailable',
         };
       }
 
@@ -764,6 +770,8 @@ export class GitWorkspaceService {
         status: 'error',
         message: friendlyGitError(error),
         document: documentToSave,
+        localSave: 'unavailable',
+        remoteSync: remoteFailure ? 'unavailable' : 'available',
       };
     }
   }
@@ -800,6 +808,8 @@ export class GitWorkspaceService {
         message: friendlyGitError(new Error(fetched.stderr || fetched.stdout)),
         commit: await this.head(cwd),
         document: await this.loadWorkspace(),
+        localSave: 'available',
+        remoteSync: 'unavailable',
       };
     }
 
@@ -824,6 +834,8 @@ export class GitWorkspaceService {
         status: 'error',
         message: 'Save your local workspace changes before syncing remote updates.',
         document: await this.loadWorkspace(),
+        localSave: 'unavailable',
+        remoteSync: 'available',
       };
     }
     if (head.stdout === remoteHead.stdout) {
@@ -842,6 +854,8 @@ export class GitWorkspaceService {
         message: 'Save your local workspace changes before syncing remote updates.',
         commit: await this.head(cwd),
         document: await this.loadWorkspace(),
+        localSave: 'unavailable',
+        remoteSync: 'available',
       };
     }
     const canFastForward = await runGit(cwd, ['merge-base', '--is-ancestor', 'HEAD', remoteRef], true);
@@ -851,6 +865,8 @@ export class GitWorkspaceService {
         message: 'Save your local workspace changes before syncing remote updates.',
         commit: await this.head(cwd),
         document: await this.loadWorkspace(),
+        localSave: 'unavailable',
+        remoteSync: 'available',
       };
     }
     await runGit(cwd, ['merge', '--ff-only', remoteRef]);
@@ -876,11 +892,11 @@ export class GitWorkspaceService {
       const remote = await this.getRemoteAccess(cwd);
       const fetched = await runGit(cwd, ['fetch', 'origin'], true, remote?.credentials);
       if (fetched.code !== 0) {
-        return { status: 'error', message: friendlyGitError(new Error(fetched.stderr || fetched.stdout)), document: await this.loadWorkspace() };
+        return { status: 'error', message: friendlyGitError(new Error(fetched.stderr || fetched.stdout)), document: await this.loadWorkspace(), localSave: 'available', remoteSync: 'unavailable' };
       }
       const branch = await this.currentBranch(cwd);
       const remoteBranch = await this.findRemoteBranch(cwd, branch);
-      if (!remoteBranch) return { status: 'error', message: 'The repository does not have a version to use yet.', document: await this.loadWorkspace() };
+      if (!remoteBranch) return { status: 'error', message: 'The repository does not have a version to use yet.', document: await this.loadWorkspace(), localSave: 'available', remoteSync: 'unavailable' };
       await runGit(cwd, ['merge', '--abort'], true);
       await runGit(cwd, ['reset', '--hard', `origin/${remoteBranch}`]);
       return {
@@ -917,6 +933,8 @@ export class GitWorkspaceService {
         message: UNSYNCABLE_ATTACHMENT_ERROR,
         commit: await this.head(cwd),
         document: await this.loadWorkspace(),
+        localSave: 'available',
+        remoteSync: 'unavailable',
       };
     }
     const pushed = await runGit(cwd, ['push', '-u', 'origin', pushRef], true, remote?.credentials);
@@ -926,6 +944,8 @@ export class GitWorkspaceService {
         message: friendlyGitError(new Error(pushed.stderr || pushed.stdout), 'write'),
         commit: await this.head(cwd),
         document: await this.loadWorkspace(),
+        localSave: 'available',
+        remoteSync: 'unavailable',
       };
     }
 

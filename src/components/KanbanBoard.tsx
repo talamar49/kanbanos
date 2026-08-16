@@ -1,14 +1,18 @@
-import { Fragment, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   closestCorners,
   DndContext,
   DragEndEvent,
+  DragMoveEvent,
   DragOverlay,
   DragOverEvent,
   DragStartEvent,
   KeyboardSensor,
   MouseSensor,
+  pointerWithin,
   TouchSensor,
+  useDroppable,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
@@ -24,6 +28,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import {
   Check,
+  CheckCircle2,
   ChevronDown,
   Columns3,
   Ellipsis,
@@ -37,8 +42,8 @@ import {
   Rows3,
   X,
 } from 'lucide-react';
-import type { KanbanColumn, Priority, Project, TaskDraft, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
-import { createWorkItem, itemsForColumn, PRIORITY_META } from '../domain/workspace';
+import type { KanbanColumn, KanbanColumnRule, Priority, Project, TaskDraft, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
+import { columnForRule, createWorkItem, itemsForColumn, KANBAN_COLUMN_RULES, PRIORITY_META } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import { useCompactLayout } from '../platform/useCompactLayout';
 import { PreferencesControls } from './PreferencesControls';
@@ -47,14 +52,64 @@ import { TaskCard } from './TaskCard';
 
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
 
+type ColumnMenuPosition = {
+  top: number;
+  left: number;
+};
+
+const COLUMN_MENU_WIDTH = 340;
+const COLUMN_MENU_GUTTER = 12;
+const COLUMN_MENU_OFFSET = 5;
+
+function columnMenuPosition(bounds: DOMRect, direction: 'ltr' | 'rtl'): ColumnMenuPosition {
+  const width = Math.min(COLUMN_MENU_WIDTH, window.innerWidth - COLUMN_MENU_GUTTER * 2);
+  const preferredLeft = direction === 'rtl' ? bounds.left : bounds.right - width;
+  return {
+    top: bounds.bottom + COLUMN_MENU_OFFSET,
+    left: Math.max(COLUMN_MENU_GUTTER, Math.min(preferredLeft, window.innerWidth - width - COLUMN_MENU_GUTTER)),
+  };
+}
+
 const boardCollisionDetection: CollisionDetection = (args) => {
-  if (args.active.data.current?.type !== 'column') return closestCorners(args);
-  return closestCorners({
-    ...args,
-    droppableContainers: args.droppableContainers.filter(
-      (container) => container.data.current?.type === 'column',
-    ),
-  });
+  if (args.active.data.current?.type === 'column') {
+    return closestCorners({
+      ...args,
+      droppableContainers: args.droppableContainers.filter(
+        (container) => container.data.current?.type === 'column',
+      ),
+    });
+  }
+
+  if (!args.pointerCoordinates) return closestCorners(args);
+
+  const collisions = pointerWithin(args);
+  const containerFor = (id: string | number) => args.droppableContainers.find((container) => container.id === id);
+  const hoveredColumn = collisions.find((collision) => containerFor(collision.id)?.data.current?.type === 'column');
+  const columnId = hoveredColumn ? containerFor(hoveredColumn.id)?.data.current?.columnId : undefined;
+  const belongsToHoveredColumn = (id: string | number) => (
+    columnId === undefined || containerFor(id)?.data.current?.columnId === columnId
+  );
+  const hoveredPreview = collisions.find((collision) => (
+    containerFor(collision.id)?.data.current?.type === 'task-preview' && belongsToHoveredColumn(collision.id)
+  ));
+  const itemCollisions = collisions.filter((collision) => (
+    containerFor(collision.id)?.data.current?.type === 'item' && belongsToHoveredColumn(collision.id)
+  ));
+  const hoveredItem = itemCollisions.find((collision) => collision.id !== args.active.id) ?? itemCollisions[0];
+  const hoveredPlacement = hoveredPreview ?? hoveredItem;
+  if (hoveredPlacement) {
+    return [hoveredPlacement, ...collisions.filter((collision) => collision.id !== hoveredPlacement.id)];
+  }
+
+  if (!hoveredColumn) return closestCorners(args);
+  const columnItems = args.droppableContainers.filter((container) => (
+    (container.data.current?.type === 'item' || container.data.current?.type === 'task-preview')
+    && container.data.current.columnId === columnId
+  ));
+  const closestItem = closestCorners({ ...args, droppableContainers: columnItems })[0];
+  return closestItem
+    ? [closestItem, hoveredColumn, ...collisions.filter((collision) => collision.id !== hoveredColumn.id)]
+    : collisions;
 };
 
 const boardKeyboardCoordinates: KeyboardCoordinateGetter = (event, args) => {
@@ -91,8 +146,51 @@ type Props = {
 type TaskDropPreviewState = {
   itemId: string;
   columnId: string;
+  index: number;
   beforeItemId?: string;
 };
+
+type TaskDragEvent = DragMoveEvent | DragOverEvent | DragEndEvent;
+
+function activatorClientY(event: Event): number | undefined {
+  if ('clientY' in event && typeof event.clientY === 'number') return event.clientY;
+  if ('touches' in event) {
+    const touchEvent = event as TouchEvent;
+    return (touchEvent.touches[0] ?? touchEvent.changedTouches[0])?.clientY;
+  }
+  return undefined;
+}
+
+function isBelowHoveredItem(event: TaskDragEvent): boolean {
+  if (!event.over) return false;
+  const midpoint = event.over.rect.top + event.over.rect.height / 2;
+  const clientY = activatorClientY(event.activatorEvent);
+  const initial = event.active.rect.current.initial;
+  const translated = event.active.rect.current.translated;
+  if (clientY !== undefined && initial && translated) {
+    return translated.top + (clientY - initial.top) > midpoint;
+  }
+  return translated ? translated.top + translated.height / 2 > midpoint : false;
+}
+
+function taskDropIndex(event: TaskDragEvent, itemId: string, targetItems: WorkItem[]): number {
+  const destinationItems = targetItems.filter((item) => item.id !== itemId);
+  const overData = event.over?.data.current as { type?: string; index?: number } | undefined;
+  if (overData?.type === 'task-preview') {
+    return Math.max(0, Math.min(overData.index ?? destinationItems.length, destinationItems.length));
+  }
+  if (overData?.type !== 'item') return destinationItems.length;
+
+  const overId = String(event.over?.id);
+  if (overId === itemId) {
+    const originalIndex = targetItems.findIndex((item) => item.id === itemId);
+    return Math.max(0, Math.min(originalIndex, destinationItems.length));
+  }
+
+  const overIndex = destinationItems.findIndex((item) => item.id === overId);
+  if (overIndex < 0) return destinationItems.length;
+  return overIndex + (isBelowHoveredItem(event) ? 1 : 0);
+}
 
 type ColumnProps = {
   column: KanbanColumn;
@@ -109,18 +207,43 @@ type ColumnProps = {
   mobile?: boolean;
 };
 
-function TaskDropPreview({ item }: { item: WorkItem }) {
-  const { t } = useI18n();
+function TaskDropPreview({ item, columnId, index, subtasksCollapsed, onAction, onOpenTask }: {
+  item: WorkItem;
+  columnId: string;
+  index: number;
+  subtasksCollapsed: boolean;
+  onAction: (action: WorkspaceAction) => void;
+  onOpenTask: (item: WorkItem) => void;
+}) {
+  const { setNodeRef } = useDroppable({
+    id: `task-drop-slot:${item.id}:${columnId}:${index}`,
+    data: { type: 'task-preview', columnId, index },
+  });
+  const setDropSlotRef = useCallback((node: HTMLDivElement | null) => {
+    setNodeRef(node);
+    if (!node) return;
+    const cardHeight = node.firstElementChild instanceof HTMLElement
+      ? node.firstElementChild.offsetHeight
+      : 0;
+    node.style.setProperty('--task-drop-slot-height', `${Math.max(cardHeight, node.scrollHeight)}px`);
+  }, [setNodeRef]);
+
   return (
-    <div className="task-drop-preview" aria-hidden="true">
-      <span style={{ background: PRIORITY_META[item.priority].color }} />
-      <div><strong>{item.title}</strong><small>{t('Drop to move')}</small></div>
+    <div ref={setDropSlotRef} className="task-drop-slot kanban-task-drop-slot">
+      <TaskCard
+        item={item}
+        dropPreview
+        subtasksCollapsed={subtasksCollapsed}
+        onOpen={onOpenTask}
+        onUpdateSubtasks={(itemId, subtasks) => onAction({ type: 'updateItem', itemId, changes: { subtasks } })}
+        onSetSubtasksCollapsed={(itemId, collapsed) => onAction({ type: 'setKanbanSubtasksCollapsed', itemId, collapsed })}
+      />
     </div>
   );
 }
 
 function BoardColumn({ column, items, projectId, allColumns, projectById, collapsedSubtaskItemIds, aggregate, dropPreview, onAction, onOpenTask, onCreateTask, mobile = false }: ColumnProps) {
-  const { t } = useI18n();
+  const { direction, t } = useI18n();
   const {
     attributes,
     listeners,
@@ -138,9 +261,13 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<ColumnMenuPosition | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [columnTitle, setColumnTitle] = useState(column.title);
   const composerRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuPopoverRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!aggregate) return;
@@ -148,6 +275,48 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
     setMenuOpen(false);
     setRenaming(false);
   }, [aggregate]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOutside = (event: PointerEvent | FocusEvent) => {
+      const target = event.target as Node;
+      if (!menuRef.current?.contains(target) && !menuPopoverRef.current?.contains(target)) setMenuOpen(false);
+    };
+    const closeWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setMenuOpen(false);
+      menuTriggerRef.current?.focus();
+    };
+    window.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('focusin', closeOutside);
+    window.addEventListener('keydown', closeWithKeyboard);
+    return () => {
+      window.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('focusin', closeOutside);
+      window.removeEventListener('keydown', closeWithKeyboard);
+    };
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const updatePosition = () => {
+      if (menuTriggerRef.current) setMenuPosition(columnMenuPosition(menuTriggerRef.current.getBoundingClientRect(), direction));
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [direction, menuOpen]);
+
+  const toggleMenu = () => {
+    if (!menuOpen && menuTriggerRef.current) {
+      setMenuPosition(columnMenuPosition(menuTriggerRef.current.getBoundingClientRect(), direction));
+    }
+    setMenuOpen((open) => !open);
+  };
 
   const addTask = () => {
     const clean = title.trim();
@@ -177,10 +346,18 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
     setRenaming(false);
   };
 
+  const assignRule = (rule: KanbanColumnRule) => {
+    onAction({ type: 'setColumnRule', projectId, columnId: column.id, rule });
+  };
+
   const deleteColumn = () => {
     const destination = allColumns.find((candidate) => candidate.id !== column.id);
     if (!destination) return;
-    if (window.confirm(t('Delete “{{column}}”? Its cards will move to “{{destination}}”.', { column: t(column.title), destination: t(destination.title) }))) {
+    const carriesRules = KANBAN_COLUMN_RULES.some((rule) => columnForRule(allColumns, rule)?.id === column.id);
+    const message = carriesRules
+      ? t('Delete “{{column}}”? Its cards and column rules will move to “{{destination}}”.', { column: t(column.title), destination: t(destination.title) })
+      : t('Delete “{{column}}”? Its cards will move to “{{destination}}”.', { column: t(column.title), destination: t(destination.title) });
+    if (window.confirm(message)) {
       onAction({
         type: 'deleteColumn',
         projectId,
@@ -191,12 +368,14 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
     setMenuOpen(false);
   };
 
+  const newTasksStartHere = columnForRule(allColumns, 'new-task')?.id === column.id;
+  const tasksAreCompletedHere = columnForRule(allColumns, 'completed')?.id === column.id;
   const atLimit = column.limit !== undefined && items.length >= column.limit;
 
   return (
     <section
       ref={setNodeRef}
-      className={`board-column ${isOver ? 'column-over' : ''} ${isDragging ? 'column-dragging' : ''}`}
+      className={`board-column ${isOver ? 'column-over' : ''} ${isDragging ? 'column-dragging' : ''} ${menuOpen ? 'menu-open' : ''}`}
       style={{ transform: CSS.Transform.toString(transform), transition, '--column-color': column.color } as CSSProperties}
     >
       <header className="column-header">
@@ -231,11 +410,34 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
         </div>
         {!aggregate && (
           <div className="column-actions">
-            <button className="icon-button" aria-label={t('Add task to {{name}}', { name: t(column.title) })} onClick={requestTask}><Plus size={16} /></button>
-            <div className="relative">
-              <button className="icon-button" aria-label={t('Column options')} onClick={() => setMenuOpen((open) => !open)}><Ellipsis size={17} /></button>
-              {menuOpen && (
-                <div className="popover column-menu scale-in">
+            <button
+              className="icon-button column-add-task-button"
+              aria-label={t('Add task to {{name}}', { name: t(column.title) })}
+              title={t('Add task to {{name}}', { name: t(column.title) })}
+              onClick={requestTask}
+            ><Plus size={16} /></button>
+            <div ref={menuRef} className="relative column-menu-host">
+              <button
+                ref={menuTriggerRef}
+                className="icon-button"
+                aria-label={t('Column options')}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={toggleMenu}
+              ><Ellipsis size={17} /></button>
+              {menuOpen && menuPosition && createPortal(
+                <div
+                  ref={menuPopoverRef}
+                  className="popover column-menu column-menu-portal scale-in"
+                  role="menu"
+                  style={{
+                    position: 'fixed',
+                    top: menuPosition.top,
+                    left: menuPosition.left,
+                    maxHeight: `calc(100vh - ${COLUMN_MENU_GUTTER * 2}px)`,
+                    overflowY: 'auto',
+                  }}
+                >
                   <button onClick={() => { setRenaming(true); setMenuOpen(false); }}>{t('Rename column')}</button>
                   <button onClick={() => {
                     const value = window.prompt(t('Work-in-progress limit (leave empty for none)'), column.limit?.toString() ?? '');
@@ -245,8 +447,40 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
                     }
                     setMenuOpen(false);
                   }}>{t('Set WIP limit')}</button>
-                  {allColumns.length > 1 && <button className="danger-option" onClick={deleteColumn}>{t('Delete column')}</button>}
-                </div>
+                  <div className="popover-separator" />
+                  <p className="column-rule-title">{t('Column behavior')}</p>
+                  <small className="column-rule-help">{t('Tell Kanbanos what this column means. Each behavior can be assigned to one column.')}</small>
+                  <button
+                    className={`column-rule-option ${newTasksStartHere ? 'selected' : ''}`}
+                    role="menuitemcheckbox"
+                    aria-label={t('Default home for new tasks')}
+                    aria-checked={newTasksStartHere}
+                    onClick={() => assignRule('new-task')}
+                  >
+                    <Plus size={18} />
+                    <span className="column-rule-copy">
+                      <strong>{t('Default home for new tasks')}</strong>
+                      <small>{t('New tasks are added here unless you choose another column.')}</small>
+                    </span>
+                    <b>{newTasksStartHere && <Check size={14} />}</b>
+                  </button>
+                  <button
+                    className={`column-rule-option ${tasksAreCompletedHere ? 'selected' : ''}`}
+                    role="menuitemcheckbox"
+                    aria-label={t('Count tasks as complete')}
+                    aria-checked={tasksAreCompletedHere}
+                    onClick={() => assignRule('completed')}
+                  >
+                    <CheckCircle2 size={18} />
+                    <span className="column-rule-copy">
+                      <strong>{t('Count tasks as complete')}</strong>
+                      <small>{t('Tasks here count as completed in List and Roadmap progress.')}</small>
+                    </span>
+                    <b>{tasksAreCompletedHere && <Check size={14} />}</b>
+                  </button>
+                  {allColumns.length > 1 && <><div className="popover-separator" /><button className="danger-option" onClick={deleteColumn}>{t('Delete column')}</button></>}
+                </div>,
+                window.document.body,
               )}
             </div>
           </div>
@@ -257,7 +491,16 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
         <div className="task-list">
           {items.map((item) => (
             <Fragment key={item.id}>
-              {dropPreview?.beforeItemId === item.id && <TaskDropPreview item={dropPreview.item} />}
+              {dropPreview?.beforeItemId === item.id && (
+                <TaskDropPreview
+                  item={dropPreview.item}
+                  columnId={dropPreview.columnId}
+                  index={dropPreview.index}
+                  subtasksCollapsed={collapsedSubtaskItemIds.has(dropPreview.item.id)}
+                  onAction={onAction}
+                  onOpenTask={onOpenTask}
+                />
+              )}
               <TaskCard
                 item={item}
                 project={aggregate ? projectById.get(item.projectId) : undefined}
@@ -278,7 +521,14 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
             </Fragment>
           ))}
           {dropPreview && (!dropPreview.beforeItemId || !items.some((item) => item.id === dropPreview.beforeItemId)) && (
-            <TaskDropPreview item={dropPreview.item} />
+            <TaskDropPreview
+              item={dropPreview.item}
+              columnId={dropPreview.columnId}
+              index={dropPreview.index}
+              subtasksCollapsed={collapsedSubtaskItemIds.has(dropPreview.item.id)}
+              onAction={onAction}
+              onOpenTask={onOpenTask}
+            />
           )}
           {items.length === 0 && !adding && !dropPreview && (aggregate ? (
             <div className="empty-column aggregate-empty">
@@ -330,8 +580,53 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
   const [taskDropPreview, setTaskDropPreview] = useState<TaskDropPreviewState | null>(null);
   const [scope, setScope] = useState<ProjectScope>('current');
   const [mobileBoardOrientation, setMobileBoardOrientation] = useState<'stacked' | 'horizontal'>('stacked');
+  const filterRef = useRef<HTMLDivElement>(null);
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
+  const addColumnRef = useRef<HTMLDivElement>(null);
+  const addColumnTriggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => setScope('current'), [project.id]);
+
+  useEffect(() => {
+    if (!filterOpen) return;
+    const closeOutside = (event: PointerEvent | FocusEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setFilterOpen(false);
+    };
+    const closeWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setFilterOpen(false);
+      filterTriggerRef.current?.focus();
+    };
+    window.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('focusin', closeOutside);
+    window.addEventListener('keydown', closeWithKeyboard);
+    return () => {
+      window.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('focusin', closeOutside);
+      window.removeEventListener('keydown', closeWithKeyboard);
+    };
+  }, [filterOpen]);
+
+  useEffect(() => {
+    if (!addingColumn) return;
+    const closeOutside = (event: PointerEvent | FocusEvent) => {
+      if (addColumnRef.current?.contains(event.target as Node)) return;
+      setAddingColumn(false);
+    };
+    const closeWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setAddingColumn(false);
+      window.setTimeout(() => addColumnTriggerRef.current?.focus(), 0);
+    };
+    window.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('focusin', closeOutside);
+    window.addEventListener('keydown', closeWithKeyboard);
+    return () => {
+      window.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('focusin', closeOutside);
+      window.removeEventListener('keydown', closeWithKeyboard);
+    };
+  }, [addingColumn]);
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
@@ -396,15 +691,17 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
     const item = document.items[itemId];
     setDraggingItemId(itemId);
     setDraggingColumnId(null);
-    setTaskDropPreview(item ? { itemId, columnId: item.moduleData.kanban.columnId, beforeItemId: itemId } : null);
+    setTaskDropPreview(null);
   };
 
-  const onDragOver = ({ active, over }: DragOverEvent) => {
+  const updateTaskDropPreview = (event: DragMoveEvent | DragOverEvent) => {
+    const { active, over } = event;
     const activeData = active.data.current as { type?: string } | undefined;
-    if (!over || activeData?.type === 'column') {
+    if (activeData?.type === 'column') {
       setTaskDropPreview(null);
       return;
     }
+    if (!over) return;
     const itemId = String(active.id);
     const item = document.items[itemId];
     const overData = over.data.current as { type?: string; columnId?: string } | undefined;
@@ -416,14 +713,24 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
     }
 
     const targetItems = itemsForColumn(document, item.projectId, columnId);
-    const overIndex = overData?.type === 'item'
-      ? Math.max(0, targetItems.findIndex((target) => target.id === String(over.id)))
-      : targetItems.length;
     const destinationItems = targetItems.filter((target) => target.id !== itemId);
-    setTaskDropPreview({ itemId, columnId, beforeItemId: destinationItems[overIndex]?.id });
+    const index = taskDropIndex(event, itemId, targetItems);
+    const originalIndex = targetItems.findIndex((target) => target.id === itemId);
+    if (columnId === item.moduleData.kanban.columnId && index === originalIndex) {
+      setTaskDropPreview(null);
+      return;
+    }
+    const nextPreview = { itemId, columnId, index, beforeItemId: destinationItems[index]?.id };
+    setTaskDropPreview((current) => current?.itemId === nextPreview.itemId
+      && current.columnId === nextPreview.columnId
+      && current.index === nextPreview.index
+      && current.beforeItemId === nextPreview.beforeItemId
+      ? current
+      : nextPreview);
   };
 
-  const onDragEnd = ({ active, over }: DragEndEvent) => {
+  const onDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
     clearDragState();
     if (!over) return;
     const activeData = active.data.current as { type?: string; columnId?: string } | undefined;
@@ -450,10 +757,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
     const itemColumns = document.modules.kanban.projects[item.projectId]?.columns ?? [];
     if (!itemColumns.some((column) => column.id === columnId)) return;
     const targetItems = itemsForColumn(document, item.projectId, columnId);
-    const overIndex = overData?.type === 'item'
-      ? Math.max(0, targetItems.findIndex((target) => target.id === String(over.id)))
-      : targetItems.length;
-    onAction({ type: 'moveItem', itemId: item.id, columnId, index: overIndex });
+    onAction({ type: 'moveItem', itemId: item.id, columnId, index: taskDropIndex(event, item.id, targetItems) });
   };
 
   const addColumn = () => {
@@ -518,19 +822,19 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
         </div>
       </div>
 
-      <div className="board-toolbar">
+      <div className={`board-toolbar ${!showAllProjects ? 'with-add-column' : ''}`}>
         <div className={`search-box ${search ? 'has-value' : ''}`}>
           <Search size={16} />
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t(showAllProjects ? 'Search all projects' : 'Search this project')} />
           {search && <button onClick={() => setSearch('')}><X size={14} /></button>}
         </div>
         <ProjectScopeSelect project={project} value={scope} onChange={setScope} />
-        <div className="relative">
-          <button className={`toolbar-button ${priorities.length ? 'active' : ''}`} onClick={() => setFilterOpen((open) => !open)}>
+        <div ref={filterRef} className="relative">
+          <button ref={filterTriggerRef} className={`toolbar-button ${priorities.length ? 'active' : ''}`} aria-haspopup="menu" aria-expanded={filterOpen} onClick={() => setFilterOpen((open) => !open)}>
             <Filter size={15} /> {t('Filter')} {priorities.length > 0 && <span>{priorities.length}</span>} <ChevronDown size={13} />
           </button>
           {filterOpen && (
-            <div className="popover filter-menu scale-in">
+            <div className="popover filter-menu scale-in" role="menu">
               <p>{t('Show priority')}</p>
               {(Object.keys(PRIORITY_META) as Priority[]).filter((priority) => priority !== 'none').map((priority) => (
                 <button key={priority} onClick={() => setPriorities((current) => current.includes(priority) ? current.filter((value) => value !== priority) : [...current, priority])}>
@@ -543,20 +847,56 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
             </div>
           )}
         </div>
+        {!showAllProjects && (
+          <div ref={addColumnRef} className="relative board-add-column-control">
+            <button
+              ref={addColumnTriggerRef}
+              type="button"
+              className={`toolbar-button board-add-column-button ${addingColumn ? 'active' : ''}`}
+              aria-haspopup="dialog"
+              aria-expanded={addingColumn}
+              title={t('Add column')}
+              onClick={() => setAddingColumn((open) => !open)}
+            ><Plus size={16} /> {t('Add column')}</button>
+            {addingColumn && (
+              <div className="popover add-column-form board-add-column-form scale-in" role="dialog" aria-label={t('Add column')}>
+                <input
+                  value={columnName}
+                  onChange={(event) => setColumnName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') addColumn();
+                  }}
+                  placeholder={t('Column name')}
+                  autoFocus
+                />
+                <div>
+                  <button className="button button-primary" onClick={addColumn}>{t('Add column')}</button>
+                  <button className="icon-button" aria-label={t('Close')} onClick={() => setAddingColumn(false)}><X size={16} /></button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {(search || priorities.length > 0) && <span className="result-count">{t(visibleItems.length === 1 ? '{{count}} matching task' : '{{count}} matching tasks', { count: visibleItems.length })}</span>}
       </div>
 
       <DndContext
         sensors={sensors}
-        autoScroll={compactLayout ? { acceleration: 30, interval: 4, threshold: { x: 0.08, y: 0.38 } } : true}
+        autoScroll={compactLayout
+          ? { acceleration: 30, interval: 4, threshold: { x: 0.08, y: 0.38 }, layoutShiftCompensation: false }
+          : { layoutShiftCompensation: false }}
         collisionDetection={boardCollisionDetection}
         onDragStart={onDragStart}
-        onDragOver={onDragOver}
+        onDragMove={updateTaskDropPreview}
+        onDragOver={updateTaskDropPreview}
         onDragCancel={clearDragState}
         onDragEnd={onDragEnd}
       >
         <div className="board-scroll">
-          <div className="board-columns">
+          <div
+            className="board-columns"
+            style={{ '--board-column-count': Math.max(columns.length, 1) } as CSSProperties}
+          >
             <SortableContext items={columns.map((column) => `column:${column.id}`)} strategy={horizontalListSortingStrategy}>
               {columns.map((column) => (
                 <BoardColumn
@@ -578,25 +918,6 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
                 />
               ))}
             </SortableContext>
-            {!showAllProjects && (
-              <div className="add-column-wrap">
-                {addingColumn ? (
-                  <div className="add-column-form slide-up">
-                    <input
-                      value={columnName}
-                      onChange={(event) => setColumnName(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') addColumn();
-                        if (event.key === 'Escape') setAddingColumn(false);
-                      }}
-                      placeholder={t('Column name')}
-                      autoFocus
-                    />
-                    <div><button className="button button-primary" onClick={addColumn}>{t('Add column')}</button><button className="icon-button" onClick={() => setAddingColumn(false)}><X size={16} /></button></div>
-                  </div>
-                ) : <button className="add-column-button" onClick={() => setAddingColumn(true)}><Plus size={16} /> {t('Add column')}</button>}
-              </div>
-            )}
           </div>
         </div>
         <DragOverlay dropAnimation={{ duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' }}>
@@ -625,7 +946,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
         <button
           type="button"
           className="mobile-board-fab"
-          onClick={() => onCreateTask({ columnId: activeColumns.find((column) => column.id === 'planned')?.id ?? activeColumns[0]?.id })}
+          onClick={() => onCreateTask({ columnId: columnForRule(activeColumns, 'new-task')?.id })}
         ><Plus size={20} /> {t('New task')}</button>
       )}
     </main>

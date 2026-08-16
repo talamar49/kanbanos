@@ -91,11 +91,24 @@ export type CanvasViewport = {
   zoom: number;
 };
 
-export type CanvasProject = {
+export type CanvasWorkspaceView = {
+  id: string;
+  name: string;
   nodes: Record<string, CanvasNode>;
   connections: Record<string, CanvasConnection>;
   strokes: Record<string, CanvasStroke>;
   viewport: CanvasViewport;
+};
+
+export type CanvasProject = {
+  /** The first canvas stays at the top level so existing workspace files remain compatible. */
+  name: string;
+  nodes: Record<string, CanvasNode>;
+  connections: Record<string, CanvasConnection>;
+  strokes: Record<string, CanvasStroke>;
+  viewport: CanvasViewport;
+  activeViewId: string;
+  views: Record<string, CanvasWorkspaceView>;
 };
 
 export type CanvasModule = {
@@ -169,11 +182,14 @@ export type Project = {
   archived: boolean;
 };
 
+export type KanbanColumnRule = 'new-task' | 'completed';
+
 export type KanbanColumn = {
   id: string;
   title: string;
   color: string;
   limit?: number;
+  rules?: KanbanColumnRule[];
 };
 
 export type KanbanProjectSettings = {
@@ -237,18 +253,23 @@ export type WorkspaceAction =
   | { type: 'setTimelineLayout'; layout: TimelineLayout }
   | { type: 'setKanbanSubtasksCollapsed'; itemId: string; collapsed: boolean }
   | { type: 'reorderRoadmapColumns'; horizons: RoadmapHorizon[] }
-  | { type: 'canvasAddNode'; projectId: string; node: CanvasNode }
-  | { type: 'canvasUpdateNode'; projectId: string; nodeId: string; changes: Partial<Omit<CanvasNode, 'id' | 'createdAt'>> }
-  | { type: 'canvasUpdateNodes'; projectId: string; updates: Array<{ nodeId: string; changes: Partial<Omit<CanvasNode, 'id' | 'createdAt'>> }> }
-  | { type: 'canvasDeleteNodes'; projectId: string; nodeIds: string[] }
-  | { type: 'canvasAddConnection'; projectId: string; connection: CanvasConnection }
-  | { type: 'canvasDeleteConnection'; projectId: string; connectionId: string }
-  | { type: 'canvasUpdateConnection'; projectId: string; connectionId: string; changes: Partial<Pick<CanvasConnection, 'color' | 'relation' | 'label' | 'sourceLabel' | 'targetLabel'>> }
-  | { type: 'canvasAddStroke'; projectId: string; stroke: CanvasStroke }
-  | { type: 'canvasDeleteStroke'; projectId: string; strokeId: string }
-  | { type: 'canvasSetViewport'; projectId: string; viewport: CanvasViewport }
-  | { type: 'canvasAddAttachments'; projectId: string; attachments: WorkspaceAttachment[]; nodes: CanvasNode[] }
+  | { type: 'canvasAddView'; projectId: string; view: CanvasWorkspaceView }
+  | { type: 'canvasSelectView'; projectId: string; canvasViewId: string }
+  | { type: 'canvasRenameView'; projectId: string; canvasViewId: string; name: string }
+  | { type: 'canvasDeleteView'; projectId: string; canvasViewId: string }
+  | { type: 'canvasAddNode'; projectId: string; canvasViewId?: string; node: CanvasNode }
+  | { type: 'canvasUpdateNode'; projectId: string; canvasViewId?: string; nodeId: string; changes: Partial<Omit<CanvasNode, 'id' | 'createdAt'>> }
+  | { type: 'canvasUpdateNodes'; projectId: string; canvasViewId?: string; updates: Array<{ nodeId: string; changes: Partial<Omit<CanvasNode, 'id' | 'createdAt'>> }> }
+  | { type: 'canvasDeleteNodes'; projectId: string; canvasViewId?: string; nodeIds: string[] }
+  | { type: 'canvasAddConnection'; projectId: string; canvasViewId?: string; connection: CanvasConnection }
+  | { type: 'canvasDeleteConnection'; projectId: string; canvasViewId?: string; connectionId: string }
+  | { type: 'canvasUpdateConnection'; projectId: string; canvasViewId?: string; connectionId: string; changes: Partial<Pick<CanvasConnection, 'color' | 'relation' | 'label' | 'sourceLabel' | 'targetLabel'>> }
+  | { type: 'canvasAddStroke'; projectId: string; canvasViewId?: string; stroke: CanvasStroke }
+  | { type: 'canvasDeleteStroke'; projectId: string; canvasViewId?: string; strokeId: string }
+  | { type: 'canvasSetViewport'; projectId: string; canvasViewId?: string; viewport: CanvasViewport }
+  | { type: 'canvasAddAttachments'; projectId: string; canvasViewId?: string; attachments: WorkspaceAttachment[]; nodes: CanvasNode[] }
   | { type: 'addColumn'; projectId: string; column: KanbanColumn }
   | { type: 'reorderColumns'; projectId: string; columnIds: string[] }
   | { type: 'updateColumn'; projectId: string; columnId: string; changes: Partial<KanbanColumn> }
+  | { type: 'setColumnRule'; projectId: string; columnId: string; rule: KanbanColumnRule }
   | { type: 'deleteColumn'; projectId: string; columnId: string; moveToColumnId: string };

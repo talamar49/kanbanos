@@ -7,7 +7,9 @@ import type {
   CanvasStroke,
   CanvasViewport,
   CanvasRelation,
+  CanvasWorkspaceView,
   KanbanColumn,
+  KanbanColumnRule,
   KanbanProjectSettings,
   Priority,
   Project,
@@ -19,23 +21,83 @@ import type {
 
 export const PROJECT_COLORS = ['#6c5ce7', '#1f9d78', '#e58b4a', '#4c84e8', '#d45d79', '#7c879e'];
 
+export const KANBAN_COLUMN_RULES: KanbanColumnRule[] = ['new-task', 'completed'];
+
 export const DEFAULT_COLUMNS: KanbanColumn[] = [
-  { id: 'backlog', title: 'Backlog', color: '#a4a9b4' },
-  { id: 'planned', title: 'Planned', color: '#7c6ee6', limit: 5 },
-  { id: 'progress', title: 'In progress', color: '#e6a44b', limit: 4 },
-  { id: 'done', title: 'Done', color: '#43a882' },
+  { id: 'backlog', title: 'Backlog', color: '#a4a9b4', rules: [] },
+  { id: 'planned', title: 'Planned', color: '#7c6ee6', limit: 5, rules: ['new-task'] },
+  { id: 'progress', title: 'In progress', color: '#e6a44b', limit: 4, rules: [] },
+  { id: 'done', title: 'Done', color: '#43a882', rules: ['completed'] },
 ];
+
+export function columnForRule(columns: KanbanColumn[], rule: KanbanColumnRule): KanbanColumn | undefined {
+  const assigned = columns.find((column) => column.rules?.includes(rule));
+  if (assigned) return assigned;
+  if (rule === 'new-task') return columns.find((column) => column.id === 'planned') ?? columns[0];
+  return columns.find((column) => column.id === 'done')
+    ?? columns.find((column) => /done|complete/i.test(column.title))
+    ?? columns.at(-1);
+}
+
+function normalizeKanbanColumns(columns: KanbanColumn[]): KanbanColumn[] {
+  const sanitized = columns.map((column) => ({
+    ...column,
+    rules: Array.from(new Set((column.rules ?? []).filter((rule): rule is KanbanColumnRule => KANBAN_COLUMN_RULES.includes(rule)))),
+  }));
+  const targetByRule = new Map<KanbanColumnRule, string>();
+  KANBAN_COLUMN_RULES.forEach((rule) => {
+    const target = columnForRule(sanitized, rule);
+    if (target) targetByRule.set(rule, target.id);
+  });
+  return sanitized.map((column) => ({
+    ...column,
+    rules: KANBAN_COLUMN_RULES.filter((rule) => targetByRule.get(rule) === column.id),
+  }));
+}
 
 export const ROADMAP_HORIZONS: RoadmapHorizon[] = ['Now', 'Next', 'Later'];
 export const CANVAS_NODE_COLORS = ['#ffdf72', '#ff9e9e', '#9ee8cf', '#a9c7ff', '#c8b5ff', '#f7b4db'];
+export const PRIMARY_CANVAS_VIEW_ID = 'canvas-main';
 
-export function createCanvasProject(): CanvasProject {
+function emptyCanvasContents(): Pick<CanvasWorkspaceView, 'nodes' | 'connections' | 'strokes' | 'viewport'> {
   return {
     nodes: {},
     connections: {},
     strokes: {},
     viewport: { x: 0, y: 0, zoom: 1 },
   };
+}
+
+export function createCanvasView(name: string): CanvasWorkspaceView {
+  return { id: id(), name: name.trim(), ...emptyCanvasContents() };
+}
+
+export function createCanvasProject(): CanvasProject {
+  return {
+    name: 'Canvas 1',
+    ...emptyCanvasContents(),
+    activeViewId: PRIMARY_CANVAS_VIEW_ID,
+    views: {},
+  };
+}
+
+function primaryCanvasView(canvasProject: CanvasProject): CanvasWorkspaceView {
+  return {
+    id: PRIMARY_CANVAS_VIEW_ID,
+    name: canvasProject.name,
+    nodes: canvasProject.nodes,
+    connections: canvasProject.connections,
+    strokes: canvasProject.strokes,
+    viewport: canvasProject.viewport,
+  };
+}
+
+export function canvasViewsForProject(canvasProject: CanvasProject): CanvasWorkspaceView[] {
+  return [primaryCanvasView(canvasProject), ...Object.values(canvasProject.views)];
+}
+
+export function activeCanvasView(canvasProject: CanvasProject): CanvasWorkspaceView {
+  return canvasProject.views[canvasProject.activeViewId] ?? primaryCanvasView(canvasProject);
 }
 
 const CANVAS_NODE_SIZES: Record<CanvasNodeType, { width: number; height: number }> = {
@@ -111,7 +173,7 @@ export function createProject(name: string, color: string, description = ''): Pr
 }
 
 export function createProjectSettings(): KanbanProjectSettings {
-  return { columns: DEFAULT_COLUMNS.map((column) => ({ ...column })) };
+  return { columns: DEFAULT_COLUMNS.map((column) => ({ ...column, rules: [...(column.rules ?? [])] })) };
 }
 
 export function createWorkItem(
@@ -296,6 +358,52 @@ export function createDefaultWorkspace(workspaceName = 'My workspace'): Workspac
   };
 }
 
+function isCanvasContents(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const contents = value as Partial<CanvasWorkspaceView>;
+  const viewport = contents.viewport;
+  return (
+    Boolean(contents.nodes) &&
+    typeof contents.nodes === 'object' &&
+    !Array.isArray(contents.nodes) &&
+    Object.values(contents.nodes).every((node) =>
+      Boolean(node) &&
+      typeof node.id === 'string' &&
+      ['note', 'task', 'file', 'shape', 'diagram'].includes(node.type) &&
+      [node.x, node.y, node.width, node.height, node.rotation, node.zIndex].every(Number.isFinite) &&
+      typeof node.color === 'string' &&
+      typeof node.content === 'string'
+    ) &&
+    Boolean(contents.connections) &&
+    typeof contents.connections === 'object' &&
+    !Array.isArray(contents.connections) &&
+    Object.values(contents.connections).every((connection) =>
+      Boolean(connection) &&
+      typeof connection.id === 'string' &&
+      typeof connection.fromNodeId === 'string' &&
+      typeof connection.toNodeId === 'string' &&
+      typeof connection.color === 'string' &&
+      (connection.relation === undefined || ['association', 'dependency', 'inheritance', 'realization', 'aggregation', 'composition', 'message', 'data-flow'].includes(connection.relation)) &&
+      (connection.label === undefined || typeof connection.label === 'string') &&
+      (connection.sourceLabel === undefined || typeof connection.sourceLabel === 'string') &&
+      (connection.targetLabel === undefined || typeof connection.targetLabel === 'string')
+    ) &&
+    Boolean(contents.strokes) &&
+    typeof contents.strokes === 'object' &&
+    !Array.isArray(contents.strokes) &&
+    Object.values(contents.strokes).every((stroke) =>
+      Boolean(stroke) &&
+      typeof stroke.id === 'string' &&
+      Array.isArray(stroke.points) &&
+      stroke.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)) &&
+      typeof stroke.color === 'string' &&
+      Number.isFinite(stroke.width)
+    ) &&
+    Boolean(viewport) &&
+    [viewport?.x, viewport?.y, viewport?.zoom].every(Number.isFinite)
+  );
+}
+
 export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const candidate = value as Partial<WorkspaceDocument>;
@@ -334,7 +442,11 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
     typeof kanbanProjects === 'object' &&
     Object.values(kanbanProjects ?? {}).every((settings) =>
       Array.isArray(settings.columns) && settings.columns.every((column) =>
-        typeof column.id === 'string' && typeof column.title === 'string',
+        typeof column.id === 'string' &&
+        typeof column.title === 'string' &&
+        (column.rules === undefined || (
+          Array.isArray(column.rules) && column.rules.every((rule) => KANBAN_COLUMN_RULES.includes(rule))
+        )),
       ),
     );
   const attachments = candidate.resources?.attachments;
@@ -363,42 +475,19 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
     typeof canvasCandidate.projects === 'object' &&
     !Array.isArray(canvasCandidate.projects) &&
     Object.values(canvasCandidate.projects).every((canvasProject) =>
-      Boolean(canvasProject) &&
-      typeof canvasProject.nodes === 'object' &&
-      !Array.isArray(canvasProject.nodes) &&
-      Object.values(canvasProject.nodes).every((node) =>
-        Boolean(node) &&
-        typeof node.id === 'string' &&
-        ['note', 'task', 'file', 'shape', 'diagram'].includes(node.type) &&
-        [node.x, node.y, node.width, node.height, node.rotation, node.zIndex].every(Number.isFinite) &&
-        typeof node.color === 'string' &&
-        typeof node.content === 'string'
-      ) &&
-      typeof canvasProject.connections === 'object' &&
-      !Array.isArray(canvasProject.connections) &&
-      Object.values(canvasProject.connections).every((connection) =>
-        Boolean(connection) &&
-        typeof connection.id === 'string' &&
-        typeof connection.fromNodeId === 'string' &&
-        typeof connection.toNodeId === 'string' &&
-        typeof connection.color === 'string' &&
-        (connection.relation === undefined || ['association', 'dependency', 'inheritance', 'realization', 'aggregation', 'composition', 'message', 'data-flow'].includes(connection.relation)) &&
-        (connection.label === undefined || typeof connection.label === 'string') &&
-        (connection.sourceLabel === undefined || typeof connection.sourceLabel === 'string') &&
-        (connection.targetLabel === undefined || typeof connection.targetLabel === 'string')
-      ) &&
-      typeof canvasProject.strokes === 'object' &&
-      !Array.isArray(canvasProject.strokes) &&
-      Object.values(canvasProject.strokes).every((stroke) =>
-        Boolean(stroke) &&
-        typeof stroke.id === 'string' &&
-        Array.isArray(stroke.points) &&
-        stroke.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)) &&
-        typeof stroke.color === 'string' &&
-        Number.isFinite(stroke.width)
-      ) &&
-      Boolean(canvasProject.viewport) &&
-      [canvasProject.viewport.x, canvasProject.viewport.y, canvasProject.viewport.zoom].every(Number.isFinite)
+      isCanvasContents(canvasProject) &&
+      (canvasProject.name === undefined || typeof canvasProject.name === 'string') &&
+      (canvasProject.activeViewId === undefined || typeof canvasProject.activeViewId === 'string') &&
+      (canvasProject.views === undefined || (
+        Boolean(canvasProject.views) &&
+        typeof canvasProject.views === 'object' &&
+        !Array.isArray(canvasProject.views) &&
+        Object.entries(canvasProject.views).every(([viewId, canvasView]) =>
+          isCanvasContents(canvasView) &&
+          canvasView.id === viewId &&
+          typeof canvasView.name === 'string'
+        )
+      ))
     )
   );
 
@@ -423,28 +512,58 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
   );
 }
 
+function normalizeStoredCanvasView(
+  stored: Partial<CanvasWorkspaceView> | undefined,
+  viewId: string,
+  fallbackName: string,
+): CanvasWorkspaceView {
+  const nodes = stored?.nodes ?? {};
+  const connections = Object.fromEntries(Object.entries(stored?.connections ?? {})
+    .filter(([, connection]) => Boolean(nodes[connection.fromNodeId]) && Boolean(nodes[connection.toNodeId]))
+    .map(([connectionId, connection]) => [connectionId, {
+      ...connection,
+      relation: connection.relation ?? 'association',
+      label: connection.label ?? '',
+      sourceLabel: connection.sourceLabel ?? '',
+      targetLabel: connection.targetLabel ?? '',
+    }]));
+  const viewport = stored?.viewport;
+  return {
+    id: viewId,
+    name: stored?.name?.trim() || fallbackName,
+    nodes,
+    connections,
+    strokes: stored?.strokes ?? {},
+    viewport: viewport && Number.isFinite(viewport.x) && Number.isFinite(viewport.y) && Number.isFinite(viewport.zoom)
+      ? normalizedCanvasViewport(viewport)
+      : { x: 0, y: 0, zoom: 1 },
+  };
+}
+
 export function normalizeWorkspaceDocument(document: WorkspaceDocument): WorkspaceDocument {
   const storedCanvas = document.modules.canvas as WorkspaceDocument['modules']['canvas'] | undefined;
+  const kanbanProjects = Object.fromEntries(Object.entries(document.modules.kanban.projects).map(([projectId, settings]) => [
+    projectId,
+    { ...settings, columns: normalizeKanbanColumns(settings.columns) },
+  ]));
   const canvasProjects = Object.fromEntries(document.projects.map((project) => {
     const storedProject = storedCanvas?.projects?.[project.id];
-    const nodes = storedProject?.nodes ?? {};
-    const connections = Object.fromEntries(Object.entries(storedProject?.connections ?? {})
-      .filter(([, connection]) => Boolean(nodes[connection.fromNodeId]) && Boolean(nodes[connection.toNodeId]))
-      .map(([connectionId, connection]) => [connectionId, {
-        ...connection,
-        relation: connection.relation ?? 'association',
-        label: connection.label ?? '',
-        sourceLabel: connection.sourceLabel ?? '',
-        targetLabel: connection.targetLabel ?? '',
-      }]));
-    const viewport = storedProject?.viewport;
+    const primary = normalizeStoredCanvasView(storedProject, PRIMARY_CANVAS_VIEW_ID, 'Canvas 1');
+    const views = Object.fromEntries(Object.entries(storedProject?.views ?? {})
+      .filter(([viewId]) => viewId !== PRIMARY_CANVAS_VIEW_ID)
+      .map(([viewId, storedView]) => [viewId, normalizeStoredCanvasView(storedView, viewId, 'Untitled canvas')]));
+    const requestedViewId = storedProject?.activeViewId;
+    const activeViewId = requestedViewId && (requestedViewId === PRIMARY_CANVAS_VIEW_ID || Boolean(views[requestedViewId]))
+      ? requestedViewId
+      : PRIMARY_CANVAS_VIEW_ID;
     return [project.id, {
-      nodes,
-      connections,
-      strokes: storedProject?.strokes ?? {},
-      viewport: viewport && Number.isFinite(viewport.x) && Number.isFinite(viewport.y) && Number.isFinite(viewport.zoom)
-        ? { ...viewport, zoom: Math.max(0.15, Math.min(2.5, viewport.zoom)) }
-        : createCanvasProject().viewport,
+      name: primary.name,
+      nodes: primary.nodes,
+      connections: primary.connections,
+      strokes: primary.strokes,
+      viewport: primary.viewport,
+      activeViewId,
+      views,
     } satisfies CanvasProject];
   }));
   return {
@@ -455,6 +574,7 @@ export function normalizeWorkspaceDocument(document: WorkspaceDocument): Workspa
     ])),
     modules: {
       ...document.modules,
+      kanban: { ...document.modules.kanban, projects: kanbanProjects },
       canvas: { version: 1, projects: canvasProjects },
     },
     resources: {
@@ -492,18 +612,51 @@ function withCanvasProject(document: WorkspaceDocument, projectId: string, canva
   };
 }
 
+function canvasViewById(canvasProject: CanvasProject, canvasViewId?: string): CanvasWorkspaceView | undefined {
+  const targetId = canvasViewId ?? canvasProject.activeViewId;
+  if (targetId === PRIMARY_CANVAS_VIEW_ID) return primaryCanvasView(canvasProject);
+  return canvasProject.views[targetId];
+}
+
+function replaceCanvasView(canvasProject: CanvasProject, canvasView: CanvasWorkspaceView): CanvasProject {
+  if (canvasView.id === PRIMARY_CANVAS_VIEW_ID) {
+    return {
+      ...canvasProject,
+      name: canvasView.name,
+      nodes: canvasView.nodes,
+      connections: canvasView.connections,
+      strokes: canvasView.strokes,
+      viewport: canvasView.viewport,
+    };
+  }
+  return {
+    ...canvasProject,
+    views: { ...canvasProject.views, [canvasView.id]: canvasView },
+  };
+}
+
 function removeCanvasReferences(
   document: WorkspaceDocument,
   matches: (node: CanvasNode) => boolean,
 ): WorkspaceDocument['modules']['canvas'] {
   const projects = Object.fromEntries(Object.entries(document.modules.canvas.projects).map(([projectId, canvasProject]) => {
-    const removedIds = new Set(Object.values(canvasProject.nodes).filter(matches).map((node) => node.id));
-    if (removedIds.size === 0) return [projectId, canvasProject];
+    const cleanView = (canvasView: CanvasWorkspaceView): CanvasWorkspaceView => {
+      const removedIds = new Set(Object.values(canvasView.nodes).filter(matches).map((node) => node.id));
+      if (removedIds.size === 0) return canvasView;
+      return {
+        ...canvasView,
+        nodes: Object.fromEntries(Object.entries(canvasView.nodes).filter(([nodeId]) => !removedIds.has(nodeId))),
+        connections: Object.fromEntries(Object.entries(canvasView.connections).filter(([, connection]) =>
+          !removedIds.has(connection.fromNodeId) && !removedIds.has(connection.toNodeId))),
+      };
+    };
+    const primary = cleanView(primaryCanvasView(canvasProject));
+    const views = Object.fromEntries(Object.entries(canvasProject.views).map(([viewId, canvasView]) => [viewId, cleanView(canvasView)]));
     return [projectId, {
       ...canvasProject,
-      nodes: Object.fromEntries(Object.entries(canvasProject.nodes).filter(([nodeId]) => !removedIds.has(nodeId))),
-      connections: Object.fromEntries(Object.entries(canvasProject.connections).filter(([, connection]) =>
-        !removedIds.has(connection.fromNodeId) && !removedIds.has(connection.toNodeId))),
+      nodes: primary.nodes,
+      connections: primary.connections,
+      views,
     }];
   }));
   return { version: 1, projects };
@@ -743,119 +896,187 @@ export function workspaceReducer(
     return touch({ ...document, items });
   }
 
-  if (action.type === 'canvasAddNode') {
+  if (action.type === 'canvasAddView') {
     const canvasProject = document.modules.canvas.projects[action.projectId] ?? createCanvasProject();
+    const name = action.view.name.trim();
+    if (!name || action.view.id === PRIMARY_CANVAS_VIEW_ID || canvasProject.views[action.view.id]) return document;
     return touch(withCanvasProject(document, action.projectId, {
       ...canvasProject,
-      nodes: { ...canvasProject.nodes, [action.node.id]: action.node },
+      activeViewId: action.view.id,
+      views: { ...canvasProject.views, [action.view.id]: { ...action.view, name } },
     }));
+  }
+
+  if (action.type === 'canvasSelectView') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    if (!canvasProject || canvasProject.activeViewId === action.canvasViewId || !canvasViewById(canvasProject, action.canvasViewId)) return document;
+    return touch(withCanvasProject(document, action.projectId, { ...canvasProject, activeViewId: action.canvasViewId }));
+  }
+
+  if (action.type === 'canvasRenameView') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    const name = action.name.trim();
+    if (!canvasProject || !canvasView || !name || canvasView.name === name) return document;
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, { ...canvasView, name })));
+  }
+
+  if (action.type === 'canvasDeleteView') {
+    const canvasProject = document.modules.canvas.projects[action.projectId];
+    if (!canvasProject || canvasViewsForProject(canvasProject).length <= 1 || !canvasViewById(canvasProject, action.canvasViewId)) return document;
+    if (action.canvasViewId === PRIMARY_CANVAS_VIEW_ID) {
+      const [replacementId, replacement] = Object.entries(canvasProject.views)[0];
+      const views = { ...canvasProject.views };
+      delete views[replacementId];
+      return touch(withCanvasProject(document, action.projectId, {
+        ...canvasProject,
+        name: replacement.name,
+        nodes: replacement.nodes,
+        connections: replacement.connections,
+        strokes: replacement.strokes,
+        viewport: replacement.viewport,
+        activeViewId: canvasProject.activeViewId === PRIMARY_CANVAS_VIEW_ID || canvasProject.activeViewId === replacementId
+          ? PRIMARY_CANVAS_VIEW_ID
+          : canvasProject.activeViewId,
+        views,
+      }));
+    }
+    const views = { ...canvasProject.views };
+    delete views[action.canvasViewId];
+    return touch(withCanvasProject(document, action.projectId, {
+      ...canvasProject,
+      activeViewId: canvasProject.activeViewId === action.canvasViewId ? PRIMARY_CANVAS_VIEW_ID : canvasProject.activeViewId,
+      views,
+    }));
+  }
+
+  if (action.type === 'canvasAddNode') {
+    const canvasProject = document.modules.canvas.projects[action.projectId] ?? createCanvasProject();
+    const canvasView = canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasView) return document;
+    const nextView = { ...canvasView, nodes: { ...canvasView.nodes, [action.node.id]: action.node } };
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, nextView)));
   }
 
   if (action.type === 'canvasUpdateNode') {
     const canvasProject = document.modules.canvas.projects[action.projectId];
-    const current = canvasProject?.nodes[action.nodeId];
-    if (!canvasProject || !current) return document;
-    return touch(withCanvasProject(document, action.projectId, {
-      ...canvasProject,
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    const current = canvasView?.nodes[action.nodeId];
+    if (!canvasProject || !canvasView || !current) return document;
+    const nextView = {
+      ...canvasView,
       nodes: {
-        ...canvasProject.nodes,
+        ...canvasView.nodes,
         [action.nodeId]: { ...current, ...action.changes, updatedAt: now() },
       },
-    }));
+    };
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, nextView)));
   }
 
   if (action.type === 'canvasUpdateNodes') {
     const canvasProject = document.modules.canvas.projects[action.projectId];
-    if (!canvasProject || action.updates.length === 0) return document;
-    const nodes = { ...canvasProject.nodes };
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasProject || !canvasView || action.updates.length === 0) return document;
+    const nodes = { ...canvasView.nodes };
     let changed = false;
     action.updates.forEach(({ nodeId, changes }) => {
       if (!nodes[nodeId]) return;
       nodes[nodeId] = { ...nodes[nodeId], ...changes, updatedAt: now() };
       changed = true;
     });
-    return changed ? touch(withCanvasProject(document, action.projectId, { ...canvasProject, nodes })) : document;
+    return changed
+      ? touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, { ...canvasView, nodes })))
+      : document;
   }
 
   if (action.type === 'canvasDeleteNodes') {
     const canvasProject = document.modules.canvas.projects[action.projectId];
-    if (!canvasProject) return document;
-    const deletedIds = new Set(action.nodeIds.filter((nodeId) => Boolean(canvasProject.nodes[nodeId])));
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasProject || !canvasView) return document;
+    const deletedIds = new Set(action.nodeIds.filter((nodeId) => Boolean(canvasView.nodes[nodeId])));
     if (deletedIds.size === 0) return document;
-    return touch(withCanvasProject(document, action.projectId, {
-      ...canvasProject,
-      nodes: Object.fromEntries(Object.entries(canvasProject.nodes).filter(([nodeId]) => !deletedIds.has(nodeId))),
-      connections: Object.fromEntries(Object.entries(canvasProject.connections).filter(([, connection]) =>
+    const nextView = {
+      ...canvasView,
+      nodes: Object.fromEntries(Object.entries(canvasView.nodes).filter(([nodeId]) => !deletedIds.has(nodeId))),
+      connections: Object.fromEntries(Object.entries(canvasView.connections).filter(([, connection]) =>
         !deletedIds.has(connection.fromNodeId) && !deletedIds.has(connection.toNodeId))),
-    }));
+    };
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, nextView)));
   }
 
   if (action.type === 'canvasAddConnection') {
     const canvasProject = document.modules.canvas.projects[action.projectId];
-    if (!canvasProject || !canvasProject.nodes[action.connection.fromNodeId] || !canvasProject.nodes[action.connection.toNodeId]) return document;
-    const duplicate = Object.values(canvasProject.connections).some((connection) =>
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasProject || !canvasView || !canvasView.nodes[action.connection.fromNodeId] || !canvasView.nodes[action.connection.toNodeId]) return document;
+    const duplicate = Object.values(canvasView.connections).some((connection) =>
       connection.fromNodeId === action.connection.fromNodeId && connection.toNodeId === action.connection.toNodeId);
     if (duplicate || action.connection.fromNodeId === action.connection.toNodeId) return document;
-    return touch(withCanvasProject(document, action.projectId, {
-      ...canvasProject,
-      connections: { ...canvasProject.connections, [action.connection.id]: action.connection },
-    }));
+    const nextView = { ...canvasView, connections: { ...canvasView.connections, [action.connection.id]: action.connection } };
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, nextView)));
   }
 
   if (action.type === 'canvasDeleteConnection') {
     const canvasProject = document.modules.canvas.projects[action.projectId];
-    if (!canvasProject?.connections[action.connectionId]) return document;
-    const connections = { ...canvasProject.connections };
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasProject || !canvasView?.connections[action.connectionId]) return document;
+    const connections = { ...canvasView.connections };
     delete connections[action.connectionId];
-    return touch(withCanvasProject(document, action.projectId, { ...canvasProject, connections }));
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, { ...canvasView, connections })));
   }
 
   if (action.type === 'canvasUpdateConnection') {
     const canvasProject = document.modules.canvas.projects[action.projectId];
-    const current = canvasProject?.connections[action.connectionId];
-    if (!canvasProject || !current) return document;
-    return touch(withCanvasProject(document, action.projectId, {
-      ...canvasProject,
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    const current = canvasView?.connections[action.connectionId];
+    if (!canvasProject || !canvasView || !current) return document;
+    const nextView = {
+      ...canvasView,
       connections: {
-        ...canvasProject.connections,
+        ...canvasView.connections,
         [action.connectionId]: { ...current, ...action.changes },
       },
-    }));
+    };
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, nextView)));
   }
 
   if (action.type === 'canvasAddStroke') {
     const canvasProject = document.modules.canvas.projects[action.projectId];
-    if (!canvasProject || action.stroke.points.length < 2) return document;
-    return touch(withCanvasProject(document, action.projectId, {
-      ...canvasProject,
-      strokes: { ...canvasProject.strokes, [action.stroke.id]: action.stroke },
-    }));
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasProject || !canvasView || action.stroke.points.length < 2) return document;
+    const nextView = { ...canvasView, strokes: { ...canvasView.strokes, [action.stroke.id]: action.stroke } };
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, nextView)));
   }
 
   if (action.type === 'canvasDeleteStroke') {
     const canvasProject = document.modules.canvas.projects[action.projectId];
-    if (!canvasProject?.strokes[action.strokeId]) return document;
-    const strokes = { ...canvasProject.strokes };
+    const canvasView = canvasProject && canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasProject || !canvasView?.strokes[action.strokeId]) return document;
+    const strokes = { ...canvasView.strokes };
     delete strokes[action.strokeId];
-    return touch(withCanvasProject(document, action.projectId, { ...canvasProject, strokes }));
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, { ...canvasView, strokes })));
   }
 
   if (action.type === 'canvasSetViewport') {
     const canvasProject = document.modules.canvas.projects[action.projectId] ?? createCanvasProject();
+    const canvasView = canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasView) return document;
     const viewport = normalizedCanvasViewport(action.viewport);
-    if (canvasProject.viewport.x === viewport.x && canvasProject.viewport.y === viewport.y && canvasProject.viewport.zoom === viewport.zoom) return document;
-    return touch(withCanvasProject(document, action.projectId, { ...canvasProject, viewport }));
+    if (canvasView.viewport.x === viewport.x && canvasView.viewport.y === viewport.y && canvasView.viewport.zoom === viewport.zoom) return document;
+    return touch(withCanvasProject(document, action.projectId, replaceCanvasView(canvasProject, { ...canvasView, viewport })));
   }
 
   if (action.type === 'canvasAddAttachments') {
     if (action.attachments.length === 0) return document;
     const canvasProject = document.modules.canvas.projects[action.projectId] ?? createCanvasProject();
+    const canvasView = canvasViewById(canvasProject, action.canvasViewId);
+    if (!canvasView) return document;
     const attachments = { ...document.resources.attachments };
     action.attachments.forEach((attachment) => { attachments[attachment.id] = attachment; });
-    const nodes = { ...canvasProject.nodes };
+    const nodes = { ...canvasView.nodes };
     action.nodes.forEach((node) => { nodes[node.id] = node; });
+    const nextProject = replaceCanvasView(canvasProject, { ...canvasView, nodes });
     return touch({
-      ...withCanvasProject(document, action.projectId, { ...canvasProject, nodes }),
+      ...withCanvasProject(document, action.projectId, nextProject),
       resources: { ...document.resources, attachments },
     });
   }
@@ -913,9 +1134,9 @@ export function workspaceReducer(
             ...kanban.projects,
             [action.projectId]: {
               ...settings,
-              columns: settings.columns.map((column) =>
+              columns: normalizeKanbanColumns(settings.columns.map((column) =>
                 column.id === action.columnId ? { ...column, ...action.changes } : column,
-              ),
+              )),
             },
           },
         },
@@ -923,7 +1144,38 @@ export function workspaceReducer(
     });
   }
 
+  if (action.type === 'setColumnRule') {
+    if (!settings.columns.some((column) => column.id === action.columnId)) return document;
+    const columns = normalizeKanbanColumns(settings.columns).map((column) => ({
+      ...column,
+      rules: column.id === action.columnId
+        ? Array.from(new Set([...(column.rules ?? []), action.rule]))
+        : (column.rules ?? []).filter((rule) => rule !== action.rule),
+    }));
+    return touch({
+      ...document,
+      modules: {
+        ...document.modules,
+        kanban: {
+          ...kanban,
+          projects: {
+            ...kanban.projects,
+            [action.projectId]: { ...settings, columns },
+          },
+        },
+      },
+    });
+  }
+
   if (action.type === 'deleteColumn') {
+    if (action.columnId === action.moveToColumnId || !settings.columns.some((column) => column.id === action.moveToColumnId)) return document;
+    const normalizedColumns = normalizeKanbanColumns(settings.columns);
+    const deletedRules = normalizedColumns.find((column) => column.id === action.columnId)?.rules ?? [];
+    const columns = normalizedColumns
+      .filter((column) => column.id !== action.columnId)
+      .map((column) => column.id === action.moveToColumnId
+        ? { ...column, rules: Array.from(new Set([...(column.rules ?? []), ...deletedRules])) }
+        : column);
     const items = { ...document.items };
     Object.values(items).forEach((item) => {
       if (item.projectId === action.projectId && item.moduleData.kanban.columnId === action.columnId) {
@@ -947,7 +1199,7 @@ export function workspaceReducer(
             ...kanban.projects,
             [action.projectId]: {
               ...settings,
-              columns: settings.columns.filter((column) => column.id !== action.columnId),
+              columns,
             },
           },
         },

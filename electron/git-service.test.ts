@@ -462,7 +462,11 @@ describe('Git workspace persistence', () => {
     const offlineDocument = { ...initial, workspace: { name: 'Safe offline edit' } };
     const offline = await service.saveWorkspace(offlineDocument);
 
-    expect(offline.status).toBe('error');
+    expect(offline).toMatchObject({
+      status: 'error',
+      localSave: 'available',
+      remoteSync: 'unavailable',
+    });
     expect(offline.commit).not.toBe(synced.commit);
     await expect(service.loadWorkspace()).resolves.toEqual(offlineDocument);
     expect(await git(connection.repositoryPath, 'show', 'HEAD:.kanbanos/workspace.json')).toContain('Safe offline edit');

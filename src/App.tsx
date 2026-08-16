@@ -18,10 +18,11 @@ import { TaskComposerModal } from './components/TaskComposerModal';
 import { TaskModal } from './components/TaskModal';
 import { TimelineView } from './components/TimelineView';
 import type { CanvasPoint, TaskDraft, WorkspaceAction, WorkspaceAttachment, WorkspaceDocument, WorkspaceView } from './domain/types';
-import { createCanvasNode, createEmptyWorkspace, createWorkItem, isWorkspaceDocument, normalizeWorkspaceDocument, workspaceReducer } from './domain/workspace';
+import { canvasViewsForProject, columnForRule, createCanvasNode, createEmptyWorkspace, createWorkItem, isWorkspaceDocument, normalizeWorkspaceDocument, workspaceReducer } from './domain/workspace';
 import { useI18n } from './i18n';
 import { isNativeMobile } from './platform/runtime';
 import { useCompactLayout } from './platform/useCompactLayout';
+import { syncIssueForFailure, syncIssueForThrownError, type SyncIssue } from './sync-status';
 
 type BootState = 'loading' | 'onboarding' | 'ready';
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
@@ -48,12 +49,13 @@ export default function App() {
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [syncError, setSyncError] = useState('');
+  const [syncIssue, setSyncIssue] = useState<SyncIssue | null>(null);
   const [activeView, setActiveView] = useState<WorkspaceView>('board');
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [previewAttachment, setPreviewAttachment] = useState<WorkspaceAttachment | null>(null);
   const [projectModal, setProjectModal] = useState<{ mode: 'create' | 'edit'; projectId?: string; targetDate?: string } | null>(null);
   const [taskComposer, setTaskComposer] = useState<{ projectId: string; preset?: Partial<TaskDraft> } | null>(null);
-  const [pendingCanvasTask, setPendingCanvasTask] = useState<{ projectId: string; point: CanvasPoint } | null>(null);
+  const [pendingCanvasTask, setPendingCanvasTask] = useState<{ projectId: string; canvasViewId: string; point: CanvasPoint } | null>(null);
   const [remoteModalOpen, setRemoteModalOpen] = useState(false);
   const [recentWorkspaces, setRecentWorkspaces] = useState<RepositoryConnection[]>([]);
   const [conflicts, setConflicts] = useState<GitConflict[] | null>(null);
@@ -87,6 +89,7 @@ export default function App() {
         setDirty(!unchanged);
         setSaveState('error');
         setSyncError(result.message);
+        setSyncIssue('local');
         if (!quiet) notify(t(result.message), 'error');
         return;
       }
@@ -102,12 +105,14 @@ export default function App() {
           : 'idle',
       );
       setSyncError(result.status === 'error' ? result.message : '');
+      setSyncIssue(result.status === 'error' ? syncIssueForFailure(result) : null);
       recordDiagnostic('sync', 'Remote update check finished.', result.status === 'error' ? 'error' : 'info', `${result.status}: ${result.message}`);
       if (result.status === 'error' && !quiet) notify(t(result.message), 'error');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not sync the workspace.';
       setSaveState(revisionRef.current === syncedRevision ? 'error' : 'idle');
       setSyncError(message);
+      setSyncIssue(syncIssueForThrownError(message, 'sync'));
       recordDiagnostic('sync', 'Remote update check failed.', 'error', message);
       if (!quiet) notify(t(message), 'error');
     } finally {
@@ -119,6 +124,7 @@ export default function App() {
     recordDiagnostic('workspace', 'Opening workspace.');
     setConnection(nextConnection);
     setSyncError('');
+    setSyncIssue(null);
     setConflicts(null);
     setActiveView('board');
     const loaded = window.kanbanos ? await window.kanbanos.workspace.load() : { document: null };
@@ -128,6 +134,7 @@ export default function App() {
       let loadedDocument = normalizeWorkspaceDocument(stored);
       let loadedSaveState: SaveState = 'synced';
       let loadedSyncError = '';
+      let loadedSyncIssue: SyncIssue | null = null;
       if (window.kanbanos && nextConnection.remoteUrl) {
         try {
           const result = await window.kanbanos.workspace.sync();
@@ -135,6 +142,7 @@ export default function App() {
             setConflicts(result.conflicts ?? []);
             loadedSaveState = 'error';
             loadedSyncError = result.message;
+            loadedSyncIssue = 'local';
           } else {
             if (isWorkspaceDocument(result.document)) loadedDocument = normalizeWorkspaceDocument(result.document);
             loadedSaveState = result.status === 'synced'
@@ -143,16 +151,19 @@ export default function App() {
                 ? 'local'
                 : 'error';
             loadedSyncError = result.status === 'error' ? result.message : '';
+            loadedSyncIssue = result.status === 'error' ? syncIssueForFailure(result) : null;
           }
         } catch (error) {
           loadedSaveState = 'error';
           loadedSyncError = error instanceof Error ? error.message : 'Git sync failed. Check the remote and try again.';
+          loadedSyncIssue = syncIssueForThrownError(loadedSyncError, 'sync');
         }
       }
       setDocument(loadedDocument);
       setDirty(false);
       setSaveState(loadedSaveState);
       setSyncError(loadedSyncError);
+      setSyncIssue(loadedSyncIssue);
     } else {
       setDocument(createEmptyWorkspace(nextConnection.displayName, {
         projectName: t('My first project'),
@@ -160,6 +171,7 @@ export default function App() {
       }));
       setDirty(true);
       setSaveState('idle');
+      setSyncIssue(null);
     }
     setBootState('ready');
     if (loaded.recovery) {
@@ -215,6 +227,7 @@ export default function App() {
     if (saveState !== 'saving') {
       setSaveState('idle');
       setSyncError('');
+      setSyncIssue(null);
     }
   }, [recordDiagnostic, saveState]);
 
@@ -241,11 +254,12 @@ export default function App() {
         setDirty(!unchanged);
         setSaveState('error');
         setSyncError(result.message);
+        setSyncIssue('local');
         notify(t(result.message), 'error');
         return;
       }
       if (unchanged && isWorkspaceDocument(result.document)) setDocument(normalizeWorkspaceDocument(result.document));
-      setDirty(!unchanged);
+      setDirty(!unchanged || (result.status === 'error' && result.localSave === 'unavailable'));
       setSaveState(
         unchanged
           ? result.status === 'synced'
@@ -256,12 +270,14 @@ export default function App() {
           : 'idle',
       );
       setSyncError(result.status === 'error' ? result.message : '');
+      setSyncIssue(result.status === 'error' ? syncIssueForFailure(result) : null);
       recordDiagnostic('sync', 'Save finished.', result.status === 'error' ? 'error' : 'info', `${result.status}: ${result.message}`);
       if (result.status === 'error') notify(t(result.message), 'error');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not save the workspace.';
       setSaveState(revisionRef.current === savedRevision ? 'error' : 'idle');
       setSyncError(message);
+      setSyncIssue(syncIssueForThrownError(message, 'save'));
       recordDiagnostic('sync', 'Saving workspace failed.', 'error', message);
       notify(t(message), 'error');
     } finally {
@@ -362,6 +378,7 @@ export default function App() {
     setDirty(true);
     setSaveState('idle');
     setSyncError('');
+    setSyncIssue(null);
     notify(t('Remote added. Save when you are ready to sync this workspace.'));
   };
 
@@ -374,6 +391,7 @@ export default function App() {
       setBootState('onboarding');
       setSaveState('idle');
       setSyncError('');
+      setSyncIssue(null);
       setDirty(false);
     } catch (error) {
       notify(error instanceof Error ? t(error.message) : t('Could not remove this workspace.'), 'error');
@@ -392,10 +410,12 @@ export default function App() {
       setDirty(false);
       setSaveState('synced');
       setSyncError('');
+      setSyncIssue(null);
       notify(t(result.message));
     } else {
       setSaveState('error');
       setSyncError(result.message);
+      setSyncIssue(syncIssueForFailure(result));
       notify(t(result.message), 'error');
     }
   };
@@ -420,7 +440,7 @@ export default function App() {
     }
   };
 
-  const addCanvasAttachments = async (projectId: string, point: CanvasPoint, kind: 'files' | 'folders' | 'references') => {
+  const addCanvasAttachments = async (projectId: string, canvasViewId: string, point: CanvasPoint, kind: 'files' | 'folders' | 'references') => {
     const api = window.kanbanos?.attachments;
     if (!api) {
       notify(t('Attachments are available in the desktop app.'), 'error');
@@ -429,7 +449,9 @@ export default function App() {
     try {
       const attachments = await (kind === 'files' ? api.pickFiles(language) : kind === 'folders' ? api.pickFolders(language) : api.pickReferences(language));
       if (attachments.length === 0) return;
-      const canvasNodes = Object.values(document.modules.canvas.projects[projectId]?.nodes ?? {});
+      const canvasSettings = document.modules.canvas.projects[projectId];
+      const canvasView = canvasSettings && canvasViewsForProject(canvasSettings).find((view) => view.id === canvasViewId);
+      const canvasNodes = Object.values(canvasView?.nodes ?? {});
       const topZIndex = Math.max(0, ...canvasNodes.map((node) => node.zIndex));
       const nodes = attachments.map((attachment, index) => createCanvasNode('file', {
         x: point.x + index * 28,
@@ -438,7 +460,7 @@ export default function App() {
         attachmentId: attachment.id,
         zIndex: topZIndex + index + 1,
       }));
-      applyAction({ type: 'canvasAddAttachments', projectId, attachments, nodes });
+      applyAction({ type: 'canvasAddAttachments', projectId, canvasViewId, attachments, nodes });
       notify(t(attachments.length === 1 ? 'File added to the canvas.' : '{{count}} files added to the canvas.', { count: attachments.length }));
     } catch (error) {
       notify(error instanceof Error ? t(error.message) : t('Could not add files to the canvas.'), 'error');
@@ -519,12 +541,12 @@ export default function App() {
     setTaskComposer({ projectId, preset });
   };
 
-  const openCanvasTaskComposer = (projectId: string, point: CanvasPoint) => {
+  const openCanvasTaskComposer = (projectId: string, canvasViewId: string, point: CanvasPoint) => {
     const columns = document.modules.kanban.projects[projectId]?.columns ?? [];
-    setPendingCanvasTask({ projectId, point });
+    setPendingCanvasTask({ projectId, canvasViewId, point });
     setTaskComposer({
       projectId,
-      preset: { columnId: columns.find((column) => column.id === 'planned')?.id ?? columns[0]?.id },
+      preset: { columnId: columnForRule(columns, 'new-task')?.id },
     });
   };
 
@@ -538,10 +560,13 @@ export default function App() {
     }
     applyAction({ type: 'addItem', item: task });
     if (pendingCanvasTask?.projectId === task.projectId) {
-      const canvasNodes = Object.values(document.modules.canvas.projects[task.projectId]?.nodes ?? {});
+      const canvasSettings = document.modules.canvas.projects[task.projectId];
+      const canvasView = canvasSettings && canvasViewsForProject(canvasSettings).find((view) => view.id === pendingCanvasTask.canvasViewId);
+      const canvasNodes = Object.values(canvasView?.nodes ?? {});
       applyAction({
         type: 'canvasAddNode',
         projectId: task.projectId,
+        canvasViewId: pendingCanvasTask.canvasViewId,
         node: createCanvasNode('task', pendingCanvasTask.point, {
           taskId: task.id,
           color: document.projects.find((project) => project.id === task.projectId)?.color,
@@ -566,7 +591,7 @@ export default function App() {
       if (!activeProject || activeView === 'canvas' || event.key.toLowerCase() !== 'c' || event.ctrlKey || event.metaKey || event.altKey || target?.closest('input, textarea, select, [contenteditable="true"]')) return;
       event.preventDefault();
       const columns = document.modules.kanban.projects[activeProject.id]?.columns ?? [];
-      openTaskComposer(activeProject.id, { columnId: columns.find((column) => column.id === 'planned')?.id ?? columns[0]?.id });
+      openTaskComposer(activeProject.id, { columnId: columnForRule(columns, 'new-task')?.id });
     };
     window.addEventListener('keydown', handleQuickCapture);
     return () => window.removeEventListener('keydown', handleQuickCapture);
@@ -641,6 +666,7 @@ export default function App() {
         repositoryName={connection.displayName}
         syncState={saveState}
         syncError={syncError}
+        syncIssue={syncIssue ?? undefined}
         activeView={activeView}
         onChangeView={setActiveView}
         onSelectProject={(projectId) => applyAction({ type: 'selectProject', projectId })}
@@ -732,8 +758,8 @@ export default function App() {
           onAction={applyAction}
           onSave={() => void save()}
           onOpenTask={(item) => setOpenTaskId(item.id)}
-          onCreateTask={(point) => openCanvasTaskComposer(activeProject.id, point)}
-          onAddFiles={(point, kind) => void addCanvasAttachments(activeProject.id, point, kind)}
+          onCreateTask={(canvasViewId, point) => openCanvasTaskComposer(activeProject.id, canvasViewId, point)}
+          onAddFiles={(canvasViewId, point, kind) => void addCanvasAttachments(activeProject.id, canvasViewId, point, kind)}
           onPreviewAttachment={requestAttachmentPreview}
           onOpenAttachment={(attachment) => void openAttachment(attachment)}
           mobile={compactLayout}

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Calendar, Clock3, Flag, Layers2, Plus, Sparkles, X } from 'lucide-react';
 import type { KanbanColumn, Priority, Project, TaskDraft } from '../domain/types';
-import { PRIORITY_META } from '../domain/workspace';
+import { columnForRule, PRIORITY_META } from '../domain/workspace';
 import { useI18n } from '../i18n';
 
 type Props = {
@@ -15,7 +15,7 @@ type Props = {
 export function TaskComposerModal({ project, columns, preset, onCreate, onClose }: Props) {
   const { t } = useI18n();
   const [title, setTitle] = useState('');
-  const [columnId, setColumnId] = useState(preset?.columnId ?? columns.find((column) => column.id === 'planned')?.id ?? columns[0]?.id ?? '');
+  const [columnId, setColumnId] = useState(preset?.columnId ?? columnForRule(columns, 'new-task')?.id ?? '');
   const [priority, setPriority] = useState<Priority>(preset?.priority ?? 'none');
   const [startDate, setStartDate] = useState(preset?.startDate ?? '');
   const [dueDate, setDueDate] = useState(preset?.dueDate ?? '');

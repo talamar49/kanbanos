@@ -338,6 +338,25 @@ export function Onboarding({
                     : 'Create a private local workspace, open one from this device, or clone one from a remote repository.')}
               </p>
 
+              {error && <p className="form-error startup-error">{error}</p>}
+              <button className="button button-primary button-connect" onClick={() => switchMode('create')} disabled={busy !== null}>
+                <Plus size={17} /> {t('Create a new workspace')}
+              </button>
+
+              <div className="or-divider"><span>{t('or open an existing workspace')}</span></div>
+              <div className="startup-actions">
+                <button onClick={() => void chooseLocal()} disabled={busy !== null}>
+                  <span><FolderOpen size={18} /></span>
+                  <div><strong>{t(mobile ? 'Import workspace package' : 'Open workspace folder')}</strong><small>{t(mobile ? 'Choose a .kanbanos.zip or workspace JSON file' : 'Find its folder on this device')}</small></div>
+                  {busy === 'local' ? <span className="spinner spinner-dark" /> : <ChevronRight size={15} />}
+                </button>
+                <button onClick={() => switchMode('remote')} disabled={busy !== null}>
+                  <span><GitBranch size={18} /></span>
+                  <div><strong>{t('Clone remote workspace')}</strong><small>{t('Download from a Git URL')}</small></div>
+                  <ChevronRight size={15} />
+                </button>
+              </div>
+
               {recentWorkspaces.length > 0 && (
                 <div className="recent-workspaces">
                   <p>{t('Recent')}</p>
@@ -365,25 +384,6 @@ export function Onboarding({
                   </div>
                 </div>
               )}
-
-              {error && <p className="form-error startup-error">{error}</p>}
-              <button className="button button-primary button-connect" onClick={() => switchMode('create')} disabled={busy !== null}>
-                <Plus size={17} /> {t('Create a new workspace')}
-              </button>
-
-              <div className="or-divider"><span>{t('or open an existing workspace')}</span></div>
-              <div className="startup-actions">
-                <button onClick={() => void chooseLocal()} disabled={busy !== null}>
-                  <span><FolderOpen size={18} /></span>
-                  <div><strong>{t(mobile ? 'Import workspace package' : 'Open workspace folder')}</strong><small>{t(mobile ? 'Choose a .kanbanos.zip or workspace JSON file' : 'Find its folder on this device')}</small></div>
-                  {busy === 'local' ? <span className="spinner spinner-dark" /> : <ChevronRight size={15} />}
-                </button>
-                <button onClick={() => switchMode('remote')} disabled={busy !== null}>
-                  <span><GitBranch size={18} /></span>
-                  <div><strong>{t('Clone remote workspace')}</strong><small>{t('Download from a Git URL')}</small></div>
-                  <ChevronRight size={15} />
-                </button>
-              </div>
             </>
           )}
 
@@ -495,10 +495,6 @@ export function Onboarding({
             </>
           )}
 
-          <div className="trust-note startup-trust">
-            <LockKeyhole size={16} />
-            <span><strong>{t('Your work stays yours.')}</strong> {t(mobile ? 'Workspaces are stored privately on this device and can be exported at any time.' : 'Workspaces live in folders you control.')}</span>
-          </div>
         </div>
       </section>
     </main>

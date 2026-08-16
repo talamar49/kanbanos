@@ -42,6 +42,10 @@ describe('mobile timeline', () => {
     expect(screen.getByRole('heading', { name: 'Timeline' })).toBeInTheDocument();
     expect(document.querySelector('.mobile-timeline-view .timeline-chart')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Week' })).toBeInTheDocument();
+    const weekDays = Array.from(document.querySelectorAll<HTMLElement>('.mobile-timeline-view .timeline-days > div'));
+    expect(weekDays).toHaveLength(7);
+    expect(new Date(`${weekDays[0].dataset.date}T12:00:00`).getDay()).toBe(0);
+    expect(new Date(`${weekDays[6].dataset.date}T12:00:00`).getDay()).toBe(6);
     const chartScroll = document.querySelector<HTMLElement>('.mobile-timeline-view .timeline-chart-scroll')!;
     chartScroll.scrollLeft = 120;
     await user.click(screen.getByRole('button', { name: 'Month' }));

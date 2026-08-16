@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activeCanvasView,
+  canvasViewsForProject,
   createCanvasConnection,
   createCanvasNode,
   createCanvasStroke,
+  createCanvasView,
+  columnForRule,
   createEmptyWorkspace,
   createWorkItem,
   isWorkspaceDocument,
@@ -17,7 +21,10 @@ describe('workspace domain', () => {
 
     expect(workspace.workspace.name).toBe('Design team');
     expect(workspace.projects).toHaveLength(1);
-    expect(workspace.modules.kanban.projects[workspace.projects[0].id].columns).toHaveLength(4);
+    const columns = workspace.modules.kanban.projects[workspace.projects[0].id].columns;
+    expect(columns).toHaveLength(4);
+    expect(columnForRule(columns, 'new-task')?.id).toBe('planned');
+    expect(columnForRule(columns, 'completed')?.id).toBe('done');
     expect(isWorkspaceDocument(workspace)).toBe(true);
   });
 
@@ -123,6 +130,31 @@ describe('workspace domain', () => {
 
     expect(normalized.resources.attachments).toEqual({});
     expect(normalized.items[task.id].links).toEqual([]);
+  });
+
+  it('migrates legacy column identities into durable rules', () => {
+    const workspace = createEmptyWorkspace();
+    const projectId = workspace.projects[0].id;
+    const legacy = {
+      ...workspace,
+      modules: {
+        ...workspace.modules,
+        kanban: {
+          ...workspace.modules.kanban,
+          projects: {
+            ...workspace.modules.kanban.projects,
+            [projectId]: {
+              columns: workspace.modules.kanban.projects[projectId].columns.map(({ rules: _rules, ...column }) => column),
+            },
+          },
+        },
+      },
+    };
+
+    const normalized = normalizeWorkspaceDocument(legacy);
+    expect(columnForRule(normalized.modules.kanban.projects[projectId].columns, 'new-task')?.id).toBe('planned');
+    expect(columnForRule(normalized.modules.kanban.projects[projectId].columns, 'completed')?.id).toBe('done');
+    expect(normalized.modules.kanban.projects[projectId].columns.every((column) => Array.isArray(column.rules))).toBe(true);
   });
 
   it('moves an item into a column and assigns ordered ranks', () => {
@@ -290,6 +322,35 @@ describe('workspace domain', () => {
     expect(isWorkspaceDocument(viewed)).toBe(true);
   });
 
+  it('persists multiple named canvases with independent content and viewports', () => {
+    const workspace = createEmptyWorkspace();
+    const projectId = workspace.projects[0].id;
+    const planning = createCanvasView('Release planning');
+    const note = createCanvasNode('note', { x: 40, y: 70 }, { content: 'Independent plan' });
+    const withView = workspaceReducer(workspace, { type: 'canvasAddView', projectId, view: planning });
+    const withNote = workspaceReducer(withView, { type: 'canvasAddNode', projectId, canvasViewId: planning.id, node: note });
+    const viewed = workspaceReducer(withNote, {
+      type: 'canvasSetViewport',
+      projectId,
+      canvasViewId: planning.id,
+      viewport: { x: 125, y: -80, zoom: 1.4 },
+    });
+
+    const saved = JSON.parse(JSON.stringify(viewed));
+    expect(isWorkspaceDocument(saved)).toBe(true);
+    const reloaded = normalizeWorkspaceDocument(saved);
+    const canvasProject = reloaded.modules.canvas.projects[projectId];
+
+    expect(canvasViewsForProject(canvasProject).map((view) => view.name)).toEqual(['Canvas 1', 'Release planning']);
+    expect(activeCanvasView(canvasProject)).toMatchObject({
+      id: planning.id,
+      name: 'Release planning',
+      viewport: { x: 125, y: -80, zoom: 1.4 },
+    });
+    expect(activeCanvasView(canvasProject).nodes[note.id]).toEqual(note);
+    expect(canvasProject.nodes).toEqual({});
+  });
+
   it('removes connected edges with deleted canvas nodes', () => {
     const workspace = createEmptyWorkspace();
     const projectId = workspace.projects[0].id;
@@ -350,19 +411,31 @@ describe('workspace domain', () => {
       createdAt: '2026-08-11T10:00:00.000Z',
     };
     const node = createCanvasNode('file', { x: 80, y: 120 }, { attachmentId: attachment.id });
+    const references = createCanvasView('References');
+    const secondNode = createCanvasNode('file', { x: 180, y: 220 }, { attachmentId: attachment.id });
+    const withReferences = workspaceReducer(workspace, { type: 'canvasAddView', projectId, view: references });
 
-    const imported = workspaceReducer(workspace, {
+    const imported = workspaceReducer(withReferences, {
       type: 'canvasAddAttachments',
       projectId,
+      canvasViewId: 'canvas-main',
       attachments: [attachment],
       nodes: [node],
     });
-    expect(imported.resources.attachments[attachment.id]).toEqual(attachment);
-    expect(imported.modules.canvas.projects[projectId].nodes[node.id]).toEqual(node);
+    const placedTwice = workspaceReducer(imported, {
+      type: 'canvasAddNode',
+      projectId,
+      canvasViewId: references.id,
+      node: secondNode,
+    });
+    expect(placedTwice.resources.attachments[attachment.id]).toEqual(attachment);
+    expect(placedTwice.modules.canvas.projects[projectId].nodes[node.id]).toEqual(node);
+    expect(placedTwice.modules.canvas.projects[projectId].views[references.id].nodes[secondNode.id]).toEqual(secondNode);
 
-    const removed = workspaceReducer(imported, { type: 'removeAttachment', attachmentId: attachment.id });
+    const removed = workspaceReducer(placedTwice, { type: 'removeAttachment', attachmentId: attachment.id });
     expect(removed.resources.attachments[attachment.id]).toBeUndefined();
     expect(removed.modules.canvas.projects[projectId].nodes[node.id]).toBeUndefined();
+    expect(removed.modules.canvas.projects[projectId].views[references.id].nodes[secondNode.id]).toBeUndefined();
   });
 
   it('normalizes canvas storage for older workspaces', () => {
@@ -376,10 +449,13 @@ describe('workspace domain', () => {
 
     expect(normalized.modules.canvas.version).toBe(1);
     expect(normalized.modules.canvas.projects[workspace.projects[0].id]).toEqual({
+      name: 'Canvas 1',
       nodes: {},
       connections: {},
       strokes: {},
       viewport: { x: 0, y: 0, zoom: 1 },
+      activeViewId: 'canvas-main',
+      views: {},
     });
   });
 

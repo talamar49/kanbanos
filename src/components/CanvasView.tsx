@@ -13,6 +13,7 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  ChevronDown,
   Circle,
   Cloud,
   Copy,
@@ -28,6 +29,7 @@ import {
   Maximize2,
   MousePointer2,
   Paperclip,
+  PanelsTopLeft,
   Pencil,
   Plus,
   Search,
@@ -49,6 +51,7 @@ import type {
   CanvasPoint,
   CanvasProject,
   CanvasRelation,
+  CanvasWorkspaceView,
   CanvasShape,
   CanvasStroke,
   CanvasViewport,
@@ -60,10 +63,14 @@ import type {
   WorkspaceDocument,
 } from '../domain/types';
 import {
+  activeCanvasView,
   CANVAS_NODE_COLORS,
+  canvasViewsForProject,
   createCanvasConnection,
   createCanvasNode,
   createCanvasStroke,
+  createCanvasView,
+  PRIMARY_CANVAS_VIEW_ID,
   PRIORITY_META,
 } from '../domain/workspace';
 import { useI18n } from '../i18n';
@@ -92,8 +99,8 @@ type Props = {
   onAction: (action: WorkspaceAction) => void;
   onSave: () => void;
   onOpenTask: (item: WorkItem) => void;
-  onCreateTask: (point: CanvasPoint) => void;
-  onAddFiles: (point: CanvasPoint, kind: 'files' | 'folders' | 'references') => void;
+  onCreateTask: (canvasViewId: string, point: CanvasPoint) => void;
+  onAddFiles: (canvasViewId: string, point: CanvasPoint, kind: 'files' | 'folders' | 'references') => void;
   onPreviewAttachment: (attachment: WorkspaceAttachment) => void;
   onOpenAttachment: (attachment: WorkspaceAttachment) => void;
   /** Use compact touch controls and selected-node actions. */
@@ -106,10 +113,13 @@ const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2.2;
 const GRID_SIZE = 24;
 const EMPTY_CANVAS: CanvasProject = {
+  name: 'Canvas 1',
   nodes: {},
   connections: {},
   strokes: {},
   viewport: { x: 0, y: 0, zoom: 1 },
+  activeViewId: PRIMARY_CANVAS_VIEW_ID,
+  views: {},
 };
 
 type DiagramCategory = 'UML structure' | 'UML behavior' | 'Architecture & data' | 'Flow & sequence';
@@ -457,7 +467,7 @@ function MiniMap({
   onNavigate,
   label,
 }: {
-  canvasProject: CanvasProject;
+  canvasProject: CanvasWorkspaceView;
   viewport: CanvasViewport;
   stageSize: { width: number; height: number };
   onNavigate: (point: CanvasPoint) => void;
@@ -528,10 +538,16 @@ export function CanvasView({
   nativeMobile = false,
 }: Props) {
   const { locale, t } = useI18n();
-  const canvasProject = document.modules.canvas.projects[project.id] ?? EMPTY_CANVAS;
+  const canvasSettings = document.modules.canvas.projects[project.id] ?? EMPTY_CANVAS;
+  const canvasProject = activeCanvasView(canvasSettings);
+  const canvasViews = canvasViewsForProject(canvasSettings);
+  const displayCanvasName = (view: CanvasWorkspaceView) => view.id === PRIMARY_CANVAS_VIEW_ID && view.name === 'Canvas 1' ? t('Canvas 1') : view.name;
   const [viewport, setViewport] = useState<CanvasViewport>(canvasProject.viewport);
   const [tool, setTool] = useState<CanvasTool>('select');
   const [libraryPanel, setLibraryPanel] = useState<LibraryPanel>(null);
+  const [viewsMenuOpen, setViewsMenuOpen] = useState(false);
+  const [viewEditor, setViewEditor] = useState<{ mode: 'create' | 'rename'; viewId?: string; name: string } | null>(null);
+  const [deletingViewId, setDeletingViewId] = useState<string | null>(null);
   const [taskSearch, setTaskSearch] = useState('');
   const [diagramSearch, setDiagramSearch] = useState('');
   const [activeRelation, setActiveRelation] = useState<CanvasRelation>('association');
@@ -584,7 +600,10 @@ export function CanvasView({
     setConnectorTargetId(null);
     setPlacingDiagram(null);
     setLibraryPanel(null);
-  }, [project.id]);
+    setViewsMenuOpen(false);
+    setViewEditor(null);
+    setDeletingViewId(null);
+  }, [canvasProject.id, project.id]);
 
   useEffect(() => {
     const element = stageRef.current;
@@ -598,11 +617,11 @@ export function CanvasView({
     const timer = window.setTimeout(() => {
       const stored = canvasProject.viewport;
       if (Math.abs(stored.x - viewport.x) > 0.5 || Math.abs(stored.y - viewport.y) > 0.5 || Math.abs(stored.zoom - viewport.zoom) > 0.002) {
-        onAction({ type: 'canvasSetViewport', projectId: project.id, viewport });
+        onAction({ type: 'canvasSetViewport', projectId: project.id, canvasViewId: canvasProject.id, viewport });
       }
     }, 550);
     return () => window.clearTimeout(timer);
-  }, [canvasProject.viewport, onAction, project.id, viewport]);
+  }, [canvasProject.id, canvasProject.viewport, onAction, project.id, viewport]);
 
   const screenToWorld = (clientX: number, clientY: number): CanvasPoint => {
     const bounds = stageRef.current?.getBoundingClientRect();
@@ -679,7 +698,7 @@ export function CanvasView({
   };
 
   const addNode = (node: CanvasNode, focus = false) => {
-    onAction({ type: 'canvasAddNode', projectId: project.id, node });
+    onAction({ type: 'canvasAddNode', projectId: project.id, canvasViewId: canvasProject.id, node });
     setSelectedNodeIds([node.id]);
     setSelectedConnectionId(null);
     setSelectedStrokeId(null);
@@ -774,6 +793,9 @@ export function CanvasView({
   const handleStagePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (pinchRef.current || (event.button !== 0 && event.button !== 1)) return;
     setLibraryPanel(null);
+    setViewsMenuOpen(false);
+    setViewEditor(null);
+    setDeletingViewId(null);
     setFreshNodeId(null);
     setConnectorSourceId(null);
     setConnectorTargetId(null);
@@ -895,10 +917,11 @@ export function CanvasView({
       onAction({
         type: 'canvasUpdateNodes',
         projectId: project.id,
+        canvasViewId: canvasProject.id,
         updates: Object.entries(nodePreview).map(([nodeId, changes]) => ({ nodeId, changes })),
       });
     } else if (gesture.type === 'resize' && resizePreview) {
-      onAction({ type: 'canvasUpdateNode', projectId: project.id, nodeId: resizePreview.nodeId, changes: { width: resizePreview.width, height: resizePreview.height } });
+      onAction({ type: 'canvasUpdateNode', projectId: project.id, canvasViewId: canvasProject.id, nodeId: resizePreview.nodeId, changes: { width: resizePreview.width, height: resizePreview.height } });
     } else if (gesture.type === 'select') {
       const left = Math.min(gesture.start.x, gesture.current.x);
       const top = Math.min(gesture.start.y, gesture.current.y);
@@ -912,11 +935,11 @@ export function CanvasView({
         ? undefined
         : nodeAtPoint(screenToWorld(event.clientX, event.clientY), gesture.sourceNodeId);
       if (target) {
-        onAction({ type: 'canvasAddConnection', projectId: project.id, connection: createCanvasConnection(gesture.sourceNodeId, target.id, '#7568d0', activeRelation) });
+        onAction({ type: 'canvasAddConnection', projectId: project.id, canvasViewId: canvasProject.id, connection: createCanvasConnection(gesture.sourceNodeId, target.id, '#7568d0', activeRelation) });
         setSelectedNodeIds([target.id]);
       }
     } else if (gesture.type === 'pen' && liveStroke && liveStroke.points.length > 1) {
-      onAction({ type: 'canvasAddStroke', projectId: project.id, stroke: liveStroke });
+      onAction({ type: 'canvasAddStroke', projectId: project.id, canvasViewId: canvasProject.id, stroke: liveStroke });
       setSelectedStrokeId(liveStroke.id);
     }
     gestureRef.current = null;
@@ -999,15 +1022,15 @@ export function CanvasView({
 
   const deleteSelection = () => {
     if (selectedNodeIds.length > 0) {
-      onAction({ type: 'canvasDeleteNodes', projectId: project.id, nodeIds: selectedNodeIds });
+      onAction({ type: 'canvasDeleteNodes', projectId: project.id, canvasViewId: canvasProject.id, nodeIds: selectedNodeIds });
       setSelectedNodeIds([]);
     }
     if (selectedConnectionId) {
-      onAction({ type: 'canvasDeleteConnection', projectId: project.id, connectionId: selectedConnectionId });
+      onAction({ type: 'canvasDeleteConnection', projectId: project.id, canvasViewId: canvasProject.id, connectionId: selectedConnectionId });
       setSelectedConnectionId(null);
     }
     if (selectedStrokeId) {
-      onAction({ type: 'canvasDeleteStroke', projectId: project.id, strokeId: selectedStrokeId });
+      onAction({ type: 'canvasDeleteStroke', projectId: project.id, canvasViewId: canvasProject.id, strokeId: selectedStrokeId });
       setSelectedStrokeId(null);
     }
   };
@@ -1051,6 +1074,9 @@ export function CanvasView({
         setPlacingShape(null);
         setPlacingDiagram(null);
         setLibraryPanel(null);
+        setViewsMenuOpen(false);
+        setViewEditor(null);
+        setDeletingViewId(null);
         setTool('select');
       } else if (!event.ctrlKey && !event.metaKey && !event.altKey) {
         const key = event.key.toLowerCase();
@@ -1082,6 +1108,38 @@ export function CanvasView({
   }));
 
   const selectedCount = selectedNodeIds.length + Number(Boolean(selectedConnectionId)) + Number(Boolean(selectedStrokeId));
+
+  const beginCreateCanvas = () => {
+    let number = canvasViews.length + 1;
+    let suggestedName = t('Canvas {{count}}', { count: number });
+    const existingNames = new Set(canvasViews.map((view) => view.name.toLocaleLowerCase()));
+    while (existingNames.has(suggestedName.toLocaleLowerCase())) {
+      number += 1;
+      suggestedName = t('Canvas {{count}}', { count: number });
+    }
+    setDeletingViewId(null);
+    setViewEditor({ mode: 'create', name: suggestedName });
+  };
+
+  const submitViewEditor = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = viewEditor?.name.trim();
+    if (!viewEditor || !name) return;
+    if (viewEditor.mode === 'create') {
+      onAction({ type: 'canvasAddView', projectId: project.id, view: createCanvasView(name) });
+    } else if (viewEditor.viewId) {
+      onAction({ type: 'canvasRenameView', projectId: project.id, canvasViewId: viewEditor.viewId, name });
+    }
+    setViewEditor(null);
+    setViewsMenuOpen(false);
+  };
+
+  const selectCanvasView = (canvasViewId: string) => {
+    if (canvasViewId !== canvasProject.id) onAction({ type: 'canvasSelectView', projectId: project.id, canvasViewId });
+    setViewsMenuOpen(false);
+    setViewEditor(null);
+    setDeletingViewId(null);
+  };
   const selectedNodeActionPosition = mobile && selectedNode ? (() => {
     const node = renderedNodes[selectedNode.id] ?? selectedNode;
     const zoom = viewport.zoom;
@@ -1130,9 +1188,96 @@ export function CanvasView({
         <div className="canvas-ambient canvas-ambient-one" />
         <div className="canvas-ambient canvas-ambient-two" />
 
-        <div className="canvas-project-chip">
-          <i style={{ background: project.color }} />
-          <div><strong>{project.name}</strong><span>{t(nodes.length === 1 ? '{{count}} object' : '{{count}} objects', { count: nodes.length })}</span></div>
+        <div className="canvas-view-switcher" onPointerDown={(event) => event.stopPropagation()}>
+          <button
+            type="button"
+            className="canvas-view-trigger"
+            aria-label={t('Canvas views')}
+            aria-haspopup="dialog"
+            aria-expanded={viewsMenuOpen}
+            onClick={() => {
+              setViewsMenuOpen((open) => !open);
+              setViewEditor(null);
+              setDeletingViewId(null);
+              setLibraryPanel(null);
+            }}
+          >
+            <span className="canvas-view-icon" style={{ color: project.color }}><PanelsTopLeft size={18} /></span>
+            <span className="canvas-view-trigger-copy"><strong><bdi>{displayCanvasName(canvasProject)}</bdi></strong><small>{t(nodes.length === 1 ? '{{count}} object' : '{{count}} objects', { count: nodes.length })}</small></span>
+            <ChevronDown className={viewsMenuOpen ? 'rotated' : ''} size={16} />
+          </button>
+
+          {viewsMenuOpen && (
+            <section className="canvas-views-menu scale-in" role="dialog" aria-label={t('Canvas views')}>
+              <header>
+                <div><strong>{t('Canvases')}</strong><small>{t(canvasViews.length === 1 ? '{{count}} canvas' : '{{count}} canvases', { count: canvasViews.length })}</small></div>
+                <button type="button" onClick={beginCreateCanvas}><Plus size={16} />{t('New canvas')}</button>
+              </header>
+
+              {viewEditor && (
+                <form className="canvas-view-editor" onSubmit={submitViewEditor}>
+                  <label htmlFor="canvas-view-name">{t(viewEditor.mode === 'create' ? 'Name your canvas' : 'Canvas name')}</label>
+                  <input
+                    id="canvas-view-name"
+                    autoFocus
+                    maxLength={80}
+                    value={viewEditor.name}
+                    placeholder={t('e.g. Launch ideas')}
+                    onChange={(event) => setViewEditor({ ...viewEditor, name: event.target.value })}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.stopPropagation();
+                        setViewEditor(null);
+                      }
+                    }}
+                  />
+                  <div>
+                    <button type="button" onClick={() => setViewEditor(null)}>{t('Cancel')}</button>
+                    <button type="submit" className="primary" disabled={!viewEditor.name.trim()}>{t(viewEditor.mode === 'create' ? 'Create canvas' : 'Save name')}</button>
+                  </div>
+                </form>
+              )}
+
+              {!viewEditor && <div className="canvas-view-list">
+                {canvasViews.map((view) => {
+                  const objectCount = Object.keys(view.nodes).length;
+                  const viewName = displayCanvasName(view);
+                  const deleting = deletingViewId === view.id;
+                  return (
+                    <div className={`canvas-view-row ${view.id === canvasProject.id ? 'active' : ''} ${deleting ? 'confirming-delete' : ''}`} key={view.id}>
+                      {deleting ? (
+                        <div className="canvas-view-delete-confirm" role="alert">
+                          <div><strong>{t('Delete “{{name}}”?', { name: viewName })}</strong><small>{t('This canvas and everything on it will be deleted.')}</small></div>
+                          <button type="button" onClick={() => setDeletingViewId(null)}>{t('Cancel')}</button>
+                          <button type="button" className="danger" onClick={() => {
+                            onAction({ type: 'canvasDeleteView', projectId: project.id, canvasViewId: view.id });
+                            setDeletingViewId(null);
+                            setViewsMenuOpen(false);
+                          }}>{t('Delete')}</button>
+                        </div>
+                      ) : (
+                        <>
+                          <button type="button" className="canvas-view-open" aria-label={t('Open canvas {{name}}', { name: viewName })} onClick={() => selectCanvasView(view.id)}>
+                            <span><PanelsTopLeft size={16} /></span>
+                            <span><strong><bdi>{viewName}</bdi></strong><small>{t(objectCount === 1 ? '{{count}} object' : '{{count}} objects', { count: objectCount })}</small></span>
+                            {view.id === canvasProject.id && <Check size={16} />}
+                          </button>
+                          <button type="button" className="canvas-view-row-action" aria-label={t('Rename canvas {{name}}', { name: viewName })} title={t('Rename canvas')} onClick={() => {
+                            setDeletingViewId(null);
+                            setViewEditor({ mode: 'rename', viewId: view.id, name: viewName });
+                          }}><Pencil size={15} /></button>
+                          {canvasViews.length > 1 && <button type="button" className="canvas-view-row-action danger" aria-label={t('Delete canvas {{name}}', { name: viewName })} title={t('Delete canvas')} onClick={() => {
+                            setViewEditor(null);
+                            setDeletingViewId(view.id);
+                          }}><Trash2 size={15} /></button>}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>}
+            </section>
+          )}
         </div>
 
         <div className="canvas-toolbar" onPointerDown={(event) => event.stopPropagation()}>
@@ -1150,7 +1295,7 @@ export function CanvasView({
         {libraryPanel === 'tasks' && (
           <div className="canvas-library-panel task-library scale-in" onPointerDown={(event) => event.stopPropagation()}>
             <header><div><span><ListTodo size={18} /></span><div><strong>{t('Tasks')}</strong><small>{t('Bring project work into your thinking space')}</small></div></div><button onClick={() => setLibraryPanel(null)} aria-label={t('Close')}><X size={17} /></button></header>
-            <button className="canvas-library-primary" onClick={() => { onCreateTask(centerWorld(300, 174)); setLibraryPanel(null); }}><Plus size={17} /><span><strong>{t('Create a new task')}</strong><small>{t('It will stay in sync with your board')}</small></span></button>
+            <button className="canvas-library-primary" onClick={() => { onCreateTask(canvasProject.id, centerWorld(300, 174)); setLibraryPanel(null); }}><Plus size={17} /><span><strong>{t('Create a new task')}</strong><small>{t('It will stay in sync with your board')}</small></span></button>
             {projectTasks.length > 4 && <label className="canvas-library-search"><Search size={15} /><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder={t('Search tasks')} /></label>}
             <div className="canvas-library-list">
               {searchedTasks.map((item) => {
@@ -1167,9 +1312,9 @@ export function CanvasView({
           <div className="canvas-library-panel file-library scale-in" onPointerDown={(event) => event.stopPropagation()}>
             <header><div><span><Paperclip size={18} /></span><div><strong>{t('Files')}</strong><small>{t('Keep references close to the ideas they support')}</small></div></div><button onClick={() => setLibraryPanel(null)} aria-label={t('Close')}><X size={17} /></button></header>
             <div className="canvas-import-actions">
-              <button onClick={() => { onAddFiles(centerWorld(276, 138), 'files'); setLibraryPanel(null); }}><File size={17} /><span><strong>{t('Import files')}</strong><small>{t('Choose from this device')}</small></span></button>
-              <button onClick={() => { onAddFiles(centerWorld(276, 138), 'folders'); setLibraryPanel(null); }}><Folder size={17} /><span><strong>{t('Import folder')}</strong><small>{t('Keep a folder together')}</small></span></button>
-              {!nativeMobile && <button onClick={() => { onAddFiles(centerWorld(276, 138), 'references'); setLibraryPanel(null); }}><HardDrive size={17} /><span><strong>{t('Add local file reference')}</strong><small>{t('Keep the path, not the file')}</small></span></button>}
+              <button onClick={() => { onAddFiles(canvasProject.id, centerWorld(276, 138), 'files'); setLibraryPanel(null); }}><File size={17} /><span><strong>{t('Import files')}</strong><small>{t('Choose from this device')}</small></span></button>
+              <button onClick={() => { onAddFiles(canvasProject.id, centerWorld(276, 138), 'folders'); setLibraryPanel(null); }}><Folder size={17} /><span><strong>{t('Import folder')}</strong><small>{t('Keep a folder together')}</small></span></button>
+              {!nativeMobile && <button onClick={() => { onAddFiles(canvasProject.id, centerWorld(276, 138), 'references'); setLibraryPanel(null); }}><HardDrive size={17} /><span><strong>{t('Add local file reference')}</strong><small>{t('Keep the path, not the file')}</small></span></button>}
             </div>
             {attachments.length > 0 && <p className="canvas-library-label">{t('Already in this workspace')}</p>}
             <div className="canvas-library-list">
@@ -1301,7 +1446,7 @@ export function CanvasView({
                 {node.type === 'note' && (
                   <div className="canvas-note-content">
                     <span className="canvas-note-tape" />
-                    <EditableNote node={node} focus={freshNodeId === node.id} onChange={(content) => onAction({ type: 'canvasUpdateNode', projectId: project.id, nodeId: node.id, changes: { content } })} />
+                    <EditableNote node={node} focus={freshNodeId === node.id} onChange={(content) => onAction({ type: 'canvasUpdateNode', projectId: project.id, canvasViewId: canvasProject.id, nodeId: node.id, changes: { content } })} />
                     <small>{t('NOTE')}</small>
                   </div>
                 )}
@@ -1330,12 +1475,12 @@ export function CanvasView({
                 {node.type === 'shape' && (
                   <div className="canvas-shape-content">
                     <div className="canvas-shape-surface" />
-                    <EditableShape node={node} onChange={(content) => onAction({ type: 'canvasUpdateNode', projectId: project.id, nodeId: node.id, changes: { content } })} />
+                    <EditableShape node={node} onChange={(content) => onAction({ type: 'canvasUpdateNode', projectId: project.id, canvasViewId: canvasProject.id, nodeId: node.id, changes: { content } })} />
                   </div>
                 )}
 
                 {node.type === 'diagram' && (
-                  <EditableDiagram node={node} focus={freshNodeId === node.id} onChange={(content) => onAction({ type: 'canvasUpdateNode', projectId: project.id, nodeId: node.id, changes: { content } })} />
+                  <EditableDiagram node={node} focus={freshNodeId === node.id} onChange={(content) => onAction({ type: 'canvasUpdateNode', projectId: project.id, canvasViewId: canvasProject.id, nodeId: node.id, changes: { content } })} />
                 )}
 
                 {selected && <>
@@ -1381,7 +1526,7 @@ export function CanvasView({
         {selectedNode && (
           <div className="canvas-style-bar slide-up" onPointerDown={(event) => event.stopPropagation()}>
             <span>{t('Color')}</span>
-            {CANVAS_NODE_COLORS.map((color) => <button key={color} className={selectedNode.color === color ? 'active' : ''} style={{ background: color }} aria-label={t('Use color {{color}}', { color })} onClick={() => onAction({ type: 'canvasUpdateNode', projectId: project.id, nodeId: selectedNode.id, changes: { color } })} />)}
+            {CANVAS_NODE_COLORS.map((color) => <button key={color} className={selectedNode.color === color ? 'active' : ''} style={{ background: color }} aria-label={t('Use color {{color}}', { color })} onClick={() => onAction({ type: 'canvasUpdateNode', projectId: project.id, canvasViewId: canvasProject.id, nodeId: selectedNode.id, changes: { color } })} />)}
             <i />
             <button className="canvas-style-action" onClick={duplicateSelection}><Copy size={15} /> {t('Duplicate')}</button>
             <button className="canvas-style-action danger" onClick={deleteSelection}><Trash2 size={15} /> {t('Remove')}</button>
@@ -1389,7 +1534,7 @@ export function CanvasView({
         )}
         {selectedConnection && <ConnectionInspector
           connection={selectedConnection}
-          onUpdate={(changes) => onAction({ type: 'canvasUpdateConnection', projectId: project.id, connectionId: selectedConnection.id, changes })}
+          onUpdate={(changes) => onAction({ type: 'canvasUpdateConnection', projectId: project.id, canvasViewId: canvasProject.id, connectionId: selectedConnection.id, changes })}
           onDelete={deleteSelection}
         />}
         {!selectedNode && !selectedConnection && selectedCount > 0 && <div className="canvas-style-bar canvas-delete-bar slide-up" onPointerDown={(event) => event.stopPropagation()}><span>{t('{{count}} selected', { count: selectedCount })}</span><button className="canvas-style-action danger" onClick={deleteSelection}><Trash2 size={15} /> {t('Remove')}</button></div>}

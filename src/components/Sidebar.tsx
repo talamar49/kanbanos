@@ -20,6 +20,8 @@ import {
 import kanbanosLogo from '../assets/kanbanos-mascot.png';
 import type { Project, WorkspaceDocument, WorkspaceView } from '../domain/types';
 import { useI18n } from '../i18n';
+import type { SyncIssue } from '../sync-status';
+import { KeyboardShortcutsDialog } from './KeyboardShortcutsDialog';
 import { PreferencesControls } from './PreferencesControls';
 
 type SyncState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
@@ -30,6 +32,7 @@ type Props = {
   repositoryName: string;
   syncState: SyncState;
   syncError: string;
+  syncIssue?: SyncIssue;
   activeView: WorkspaceView;
   onChangeView: (view: WorkspaceView) => void;
   onSelectProject: (projectId: string) => void;
@@ -52,6 +55,7 @@ export function Sidebar({
   repositoryName,
   syncState,
   syncError,
+  syncIssue,
   activeView,
   onChangeView,
   onSelectProject,
@@ -70,6 +74,7 @@ export function Sidebar({
   const { direction, t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const [projectMenu, setProjectMenu] = useState<{ id: string; top: number; left: number } | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -81,8 +86,27 @@ export function Sidebar({
     return () => window.removeEventListener('mousedown', close);
   }, []);
 
+  useEffect(() => {
+    const openShortcuts = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (event.key !== '?' || event.ctrlKey || event.metaKey || event.altKey || target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      event.preventDefault();
+      setShortcutsOpen(true);
+    };
+    window.addEventListener('keydown', openShortcuts);
+    return () => window.removeEventListener('keydown', openShortcuts);
+  }, []);
+
   const itemCount = (projectId: string) =>
     Object.values(document.items).filter((item) => item.projectId === projectId).length;
+  const activeSyncIssue = syncState === 'error' ? syncIssue ?? 'both' : undefined;
+  const syncCopy = activeSyncIssue === 'offline'
+    ? { title: 'Offline — saved locally', message: 'Online sync is unavailable because you are not connected to the internet. Your work is still saved on this device.' }
+    : activeSyncIssue === 'remote'
+      ? { title: 'Online sync paused', message: 'Your work is still saved on this device. Check the connection or remote settings, then try again.' }
+      : activeSyncIssue === 'local'
+        ? { title: 'Local save paused', message: 'Your work could not be saved on this device. Check your device storage, then try again.' }
+        : { title: 'Saving needs attention', message: 'Local saving and online sync are unavailable. Check your device and connection, then try again.' };
 
   return (
     <>
@@ -176,29 +200,32 @@ export function Sidebar({
 
       <div className="sidebar-footer">
         {mobile && <PreferencesControls className="sidebar-preferences" expanded />}
-        <div className={`sync-indicator sync-${syncState}`}>
+        <div className={`sync-indicator sync-${syncState} ${activeSyncIssue ? `sync-issue-${activeSyncIssue}` : ''}`}>
           <span className="sync-dot">{syncState === 'saving' && <span className="sync-pulse" />}</span>
           <div className="sync-copy">
-            <strong>{t(syncState === 'saving' ? 'Saving changes' : syncState === 'error' ? 'Sync needs attention' : syncState === 'local' ? 'Saved locally' : syncState === 'synced' ? 'All changes saved' : 'Ready to save')}</strong>
+            <strong>{t(syncState === 'saving' ? 'Saving changes' : syncState === 'error' ? syncCopy.title : syncState === 'local' ? 'Saved locally' : syncState === 'synced' ? 'All changes saved' : 'Ready to save')}</strong>
             <small
-              className={syncState === 'error' ? 'sync-error-message' : ''}
+              className={syncState === 'error' ? 'sync-status-message' : ''}
               title={syncState === 'error' ? t(syncError || 'Git sync failed. Check the remote and try again.') : undefined}
             >
-              {t(syncState === 'error' ? syncError || 'Git sync failed. Check the remote and try again.' : syncState === 'local' ? 'No remote configured' : 'Git-backed workspace')}
+              {t(syncState === 'error' ? syncCopy.message : syncState === 'local' ? 'No remote configured' : 'Git-backed workspace')}
             </small>
             {syncState === 'error' && (
-              <>
-                <span className="sync-reassurance">{t('Your local work is safe')}</span>
-                <div className="sync-error-actions">
-                  <button onClick={onRetrySync}><RefreshCw size={11} /> {t('Retry sync')}</button>
-                  {!mobile && onOpenDiagnostics && <button onClick={onOpenDiagnostics}>{t('View logs')}</button>}
-                  <button onClick={onAddRemote}>{t('Credentials')}</button>
-                </div>
-              </>
+              <div className="sync-error-actions">
+                <button onClick={onRetrySync}><RefreshCw size={14} /> {t(activeSyncIssue === 'local' ? 'Retry save' : 'Retry sync')}</button>
+                {!mobile && onOpenDiagnostics && <button onClick={onOpenDiagnostics}>{t('View logs')}</button>}
+                {activeSyncIssue !== 'local' && <button onClick={onAddRemote}>{t('Credentials')}</button>}
+              </div>
             )}
           </div>
         </div>
-        <button className="help-button"><CircleHelp size={17} /> {t('Help & shortcuts')} <kbd>?</kbd></button>
+        <button
+          className="help-button"
+          aria-haspopup="dialog"
+          aria-expanded={shortcutsOpen}
+          aria-keyshortcuts="?"
+          onClick={() => setShortcutsOpen(true)}
+        ><CircleHelp size={18} /> {t('Help & shortcuts')} <kbd>?</kbd></button>
         <div className="profile-row">
           <span className="profile-avatar">YO</span>
           <div><strong>{t('Your workspace')}</strong><small>{t('Private by default')}</small></div>
@@ -206,6 +233,10 @@ export function Sidebar({
         </div>
       </div>
       </aside>
+      {shortcutsOpen && createPortal(
+        <KeyboardShortcutsDialog onClose={() => setShortcutsOpen(false)} />,
+        window.document.body,
+      )}
     </>
   );
 }
