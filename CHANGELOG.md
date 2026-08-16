@@ -4,6 +4,25 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-16
+
+### Added
+
+- Multiple named Canvas views per project with independent content and viewports, plus backward-compatible migration of existing canvases.
+- Durable Kanban column roles for new-task placement and completion progress, with a localized in-app WIP-limit editor.
+- A keyboard shortcut reference available from the sidebar or the `?` key.
+
+### Improved
+
+- Reworked Timeline scheduling with same-day reordering, resizable Kanban-style unscheduled columns, denser task and subtask cards, multi-week continuity, and clearer dependency routing.
+- Kept desktop Kanban columns within the available width and strengthened full-card drop previews across Board and unscheduled workflows.
+- Distinguished offline and remote sync failures from local save failures so status guidance accurately reflects data safety.
+- Refined onboarding, mobile layouts, RTL localization, and soft-dark contrast across planning and attachment surfaces.
+
+### Quality
+
+- Expanded regression coverage for Canvas isolation and persistence, column rules and WIP limits, Timeline drag and dependency interactions, sync-state messaging, keyboard shortcuts, and theme contrast.
+
 ## [0.5.0] - 2026-08-12
 
 ### Added
