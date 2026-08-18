@@ -11,6 +11,7 @@ import {
   createProject,
   createProjectSettings,
   createWorkItem,
+  normalizeWorkspaceDocument,
   workspaceReducer,
 } from '../domain/workspace';
 import { renderWithPreferences } from '../test/render';
@@ -329,6 +330,53 @@ describe('workspace navigation', () => {
 });
 
 describe('board and list task management', () => {
+  it('automatically directs mixed Hebrew and English text on Kanban and timeline cards', () => {
+    const document = createEmptyWorkspace('Mixed direction workspace');
+    const project = document.projects[0];
+    const sunday = new Date();
+    sunday.setHours(12, 0, 0, 0);
+    sunday.setDate(sunday.getDate() - sunday.getDay());
+    const scheduledDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`;
+    const task = createWorkItem(project.id, 'planned', 'משימה release', 1000, {
+      description: 'תיאור English details',
+      startDate: scheduledDate,
+      dueDate: scheduledDate,
+      labels: ['חשוב launch'],
+      subtasks: [{ id: 'mixed-subtask', title: 'בדיקה QA', completed: false }],
+    });
+    document.items = { [task.id]: task };
+
+    const board = renderWithPreferences(
+      <KanbanBoard
+        document={document}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        onChangeView={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+
+    const card = screen.getByText('משימה release').closest<HTMLElement>('.task-card')!;
+    expect(within(card).getByText('משימה release')).toHaveAttribute('dir', 'auto');
+    expect(within(card).getByText('תיאור English details')).toHaveAttribute('dir', 'auto');
+    expect(within(card).getByText('חשוב launch').closest('span')).toHaveAttribute('dir', 'auto');
+    expect(within(card).getByText('בדיקה QA')).toHaveAttribute('dir', 'auto');
+    board.unmount();
+
+    renderWithPreferences(
+      <TimelineView
+        document={document}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        onCreateTask={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+    expect(screen.getByText('משימה release')).toHaveAttribute('dir', 'auto');
+  });
+
   it('fits every desktop Kanban column and card into the available width without horizontal scrolling', () => {
     const style = window.document.createElement('style');
     const globalStyles = readFileSync('src/styles/global.css', 'utf8');
@@ -388,6 +436,9 @@ describe('board and list task management', () => {
     style.textContent = [
       globalStyles.match(/:root \{[^}]+\}/)?.[0],
       globalStyles.match(/\.column-actions \{[^}]+\}/)?.[0],
+      globalStyles.match(/\.quick-add \{[^}]+\}/)?.[0],
+      globalStyles.match(/\.quick-add > textarea \{[^}]+\}/)?.[0],
+      globalStyles.match(/\.quick-add-actions \{[^}]+\}/)?.[0],
       addTaskButtonRule,
     ].filter(Boolean).join('\n');
     window.document.head.append(style);
@@ -412,8 +463,174 @@ describe('board and list task management', () => {
     expect(window.getComputedStyle(headerActions).opacity).toBe('1');
     expect(window.getComputedStyle(headerAddTask).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     await user.click(headerAddTask);
-    expect(within(backlogColumn).getByPlaceholderText('What needs to be done?')).toHaveFocus();
+    const titleField = within(backlogColumn).getByPlaceholderText('What needs to be done?');
+    const composer = titleField.closest<HTMLElement>('.quick-add')!;
+    const taskList = backlogColumn.querySelector<HTMLElement>('.task-list')!;
+    expect(titleField).toHaveFocus();
+    expect(titleField.tagName).toBe('TEXTAREA');
+    expect(composer.compareDocumentPosition(taskList) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(composer).getByRole('combobox', { name: 'Search or create labels' })).toBeInTheDocument();
+    expect(within(composer).queryByText('Ctrl+Enter to add · Enter for a new line')).not.toBeInTheDocument();
+    expect(window.getComputedStyle(composer).boxShadow).toBe('none');
+    expect(window.getComputedStyle(titleField).resize).toBe('none');
+    expect(window.getComputedStyle(titleField).minHeight).toBe('44px');
+    const actions = composer.querySelector<HTMLElement>('.quick-add-actions')!;
+    expect(actions).toContainElement(within(composer).getByRole('button', { name: 'Cancel' }));
+    expect(actions).toContainElement(within(composer).getByRole('button', { name: 'Add task' }));
+    expect(window.getComputedStyle(actions).display).toBe('flex');
+    expect(window.getComputedStyle(actions).flexWrap).toBe('nowrap');
     style.remove();
+  });
+
+  it('places a task created in a Kanban column at the top of that column', async () => {
+    const user = userEvent.setup();
+    const initialDocument = featureWorkspace();
+
+    function BoardHarness() {
+      const [document, dispatch] = useReducer(workspaceReducer, initialDocument);
+      return (
+        <KanbanBoard
+          document={document}
+          project={document.projects[0]}
+          saveState="idle"
+          dirty={false}
+          onAction={dispatch}
+          onOpenTask={vi.fn()}
+          onSave={vi.fn()}
+          onEditProject={vi.fn()}
+          onChangeView={vi.fn()}
+        />
+      );
+    }
+
+    renderWithPreferences(<BoardHarness />);
+    const column = screen.getByRole('heading', { name: 'Stuck' }).closest<HTMLElement>('.board-column')!;
+    await user.click(within(column).getByRole('button', { name: 'Add task to Stuck' }));
+    const composer = column.querySelector<HTMLElement>('.quick-add')!;
+    await user.click(within(composer).getByRole('combobox', { name: 'Search or create labels' }));
+    await user.click(within(composer).getByRole('option', { name: /Release/ }));
+    const titleField = within(composer).getByPlaceholderText('What needs to be done?');
+    Object.defineProperty(titleField, 'scrollHeight', { configurable: true, value: 96 });
+    await user.type(titleField, 'Newest task{Enter}with context');
+    expect(titleField).toHaveValue('Newest task\nwith context');
+    expect(titleField).toHaveStyle({ height: '96px' });
+    await user.keyboard('{Control>}{Enter}{/Control}');
+
+    const cards = Array.from(column.querySelectorAll<HTMLElement>('.task-card'));
+    expect(cards.map((card) => card.querySelector('h3')?.textContent)).toEqual(['Newest task\nwith context', 'Prepare launch']);
+    expect(cards[0].querySelector('.card-labels')).toHaveTextContent('Release');
+
+    const style = window.document.createElement('style');
+    style.textContent = readFileSync('src/styles/global.css', 'utf8').match(/\.task-card h3 \{[^}]+\}/)?.[0] ?? '';
+    window.document.head.append(style);
+    expect(window.getComputedStyle(cards[0].querySelector('h3')!).whiteSpace).toBe('pre-wrap');
+    style.remove();
+  });
+
+  it('checks a Kanban card into Done and deletes it without opening task details', async () => {
+    const user = userEvent.setup();
+    const initialDocument = featureWorkspace();
+    const task = Object.values(initialDocument.items).find((item) => item.title === 'Prepare launch')!;
+    const onOpenTask = vi.fn();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    function BoardHarness() {
+      const [document, dispatch] = useReducer(workspaceReducer, initialDocument);
+      return (
+        <KanbanBoard
+          document={document}
+          project={document.projects[0]}
+          saveState="idle"
+          dirty={false}
+          onAction={dispatch}
+          onOpenTask={onOpenTask}
+          onSave={vi.fn()}
+          onEditProject={vi.fn()}
+          onChangeView={vi.fn()}
+        />
+      );
+    }
+
+    renderWithPreferences(<BoardHarness />);
+    const sourceCard = screen.getByRole('heading', { name: task.title }).closest<HTMLElement>('.task-card')!;
+    const sourceActions = sourceCard.querySelector<HTMLElement>('.task-card-quick-actions')!;
+    const sourceHeading = sourceCard.querySelector<HTMLElement>('.task-card-heading')!;
+    const sourceLabelLine = sourceCard.querySelector<HTMLElement>('.task-card-label-line')!;
+    expect(sourceLabelLine.querySelector('.card-labels')).toHaveTextContent('Release');
+    expect(within(sourceHeading).queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(within(sourceHeading).queryByRole('button', { name: `Delete ${task.title}` })).not.toBeInTheDocument();
+    expect(within(sourceActions).getByRole('button', { name: 'Add a subtask' })).toBeInTheDocument();
+    expect(within(sourceActions).getByRole('button', { name: `Delete ${task.title}` })).toBeInTheDocument();
+    expect(within(sourceActions).queryByRole('checkbox')).not.toBeInTheDocument();
+    const complete = within(sourceLabelLine).getByRole('checkbox', { name: `Mark ${task.title} as complete` });
+    expect(sourceLabelLine.lastElementChild).toBe(complete);
+    const noLabelCard = screen.getByRole('heading', { name: 'Approve direction' }).closest<HTMLElement>('.task-card')!;
+    const noLabelLine = noLabelCard.querySelector<HTMLElement>('.task-card-label-line')!;
+    expect(noLabelLine.querySelector('.card-labels')).not.toBeInTheDocument();
+    expect(within(noLabelLine).getByRole('checkbox', { name: 'Mark Approve direction as not complete' })).toBeInTheDocument();
+    expect(complete).toHaveAttribute('aria-checked', 'false');
+
+    await user.click(complete);
+
+    const doneColumn = screen.getByRole('heading', { name: 'Done' }).closest<HTMLElement>('.board-column')!;
+    const completedCard = within(doneColumn).getByRole('heading', { name: task.title }).closest<HTMLElement>('.task-card')!;
+    const completedControl = within(completedCard.querySelector<HTMLElement>('.task-card-label-line')!).getByRole('checkbox', { name: `Mark ${task.title} as not complete` });
+    expect(completedControl).toHaveAttribute('aria-checked', 'true');
+    expect(completedControl.querySelector('svg')).toHaveAttribute('width', '11');
+    expect(onOpenTask).not.toHaveBeenCalled();
+
+    const globalStyles = readFileSync('src/styles/global.css', 'utf8');
+    const quickActionRule = globalStyles.match(/\.task-complete-control, \.task-delete-control \{[^}]+\}/)?.[0];
+    expect(quickActionRule).toContain('width: 28px');
+    expect(quickActionRule).toContain('height: 28px');
+    const labelLineRule = globalStyles.match(/\.task-card-label-line \{[^}]+\}/)?.[0];
+    expect(labelLineRule).toContain('display: flex');
+    const labelLineCheckboxRule = globalStyles.match(/\.task-card-label-line > \.task-card-complete \{[^}]+\}/)?.[0];
+    expect(labelLineCheckboxRule).toContain('width: 22px');
+    expect(labelLineCheckboxRule).toContain('height: 22px');
+    expect(labelLineCheckboxRule).toContain('margin-inline-start: auto');
+    const checkboxRule = globalStyles.match(/\.task-complete-control > span \{[^}]+\}/)?.[0];
+    expect(checkboxRule).toContain('width: 17px');
+    expect(checkboxRule).toContain('height: 17px');
+    expect(checkboxRule).toContain('background: transparent');
+    const completedRule = globalStyles.match(/\.task-complete-control\.completed > span \{[^}]+\}/)?.[0];
+    expect(completedRule).toContain('background: transparent');
+    expect(completedRule).toContain('box-shadow: none');
+    const deleteHoverRule = globalStyles.match(/\.task-delete-control:hover \{[^}]+\}/)?.[0];
+    expect(deleteHoverRule).toContain('background: transparent');
+    expect(globalStyles).toContain('.task-card:hover .task-card-delete');
+    expect(globalStyles.match(/\.task-card-delete \{[^}]+\}/)?.[0]).toContain('opacity: 0');
+    const deleteControl = within(completedCard.querySelector<HTMLElement>('.task-card-quick-actions')!).getByRole('button', { name: `Delete ${task.title}` });
+    expect(deleteControl.querySelector('svg')).toHaveAttribute('width', '14');
+    await user.click(deleteControl);
+
+    expect(confirm).toHaveBeenCalledWith('Delete this task? This cannot be undone after the workspace is saved.');
+    expect(screen.queryByRole('heading', { name: task.title })).not.toBeInTheDocument();
+    expect(onOpenTask).not.toHaveBeenCalled();
+  });
+
+  it('types spaces in the inline subtask composer without activating card dragging', async () => {
+    const user = userEvent.setup();
+    const document = featureWorkspace();
+    renderWithPreferences(
+      <KanbanBoard
+        document={document}
+        project={document.projects[0]}
+        saveState="idle"
+        dirty={false}
+        onChangeView={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+
+    const taskCard = screen.getByText('Prepare launch').closest<HTMLElement>('.task-card')!;
+    await user.click(within(taskCard).getByRole('button', { name: 'Add a subtask' }));
+    const input = within(taskCard).getByRole('textbox', { name: 'Add a subtask' });
+    await user.type(input, 'Write launch copy');
+
+    expect(input).toHaveValue('Write launch copy');
+    expect(input).toHaveFocus();
+    expect(taskCard).not.toHaveClass('dragging');
   });
 
   it('keeps the first card clear of the sticky column header when it lifts on hover', () => {
@@ -437,7 +654,7 @@ describe('board and list task management', () => {
       />,
     );
 
-    const plannedColumn = screen.getByRole('heading', { name: 'Planned' }).closest<HTMLElement>('.board-column')!;
+    const plannedColumn = screen.getByRole('heading', { name: 'Stuck' }).closest<HTMLElement>('.board-column')!;
     const taskList = plannedColumn.querySelector<HTMLElement>('.task-list')!;
     expect(taskList.firstElementChild).toHaveClass('task-card');
     expect(window.getComputedStyle(taskList).paddingBlockStart).toBe('6px');
@@ -493,6 +710,42 @@ describe('board and list task management', () => {
     }));
   });
 
+  it('lists existing labels and filters the Kanban board by label', async () => {
+    const user = userEvent.setup();
+    const document = featureWorkspace();
+    const done = Object.values(document.items).find((item) => item.title === 'Approve direction')!;
+    done.labels = ['Research'];
+    renderWithPreferences(
+      <KanbanBoard
+        document={document}
+        project={document.projects[0]}
+        saveState="idle"
+        dirty={false}
+        onChangeView={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Filter' }));
+    const filterMenu = screen.getByRole('menu');
+    expect(within(filterMenu).getByText('Show labels')).toBeInTheDocument();
+    expect(within(filterMenu).getByRole('button', { name: /Release/ })).toBeInTheDocument();
+    expect(within(filterMenu).getByRole('button', { name: /Research/ })).toBeInTheDocument();
+
+    const labelSearch = within(filterMenu).getByRole('textbox', { name: 'Search labels' });
+    await user.type(labelSearch, 'rel');
+    expect(within(filterMenu).getByRole('button', { name: /Release/ })).toBeInTheDocument();
+    expect(within(filterMenu).queryByRole('button', { name: /Research/ })).not.toBeInTheDocument();
+    await user.click(within(filterMenu).getByRole('button', { name: /Release/ }));
+
+    expect(screen.getByText('Prepare launch')).toBeInTheDocument();
+    expect(screen.queryByText('Approve direction')).not.toBeInTheDocument();
+    expect(screen.getByText('1 matching task')).toBeInTheDocument();
+
+    await user.click(within(filterMenu).getByRole('button', { name: 'Clear filters' }));
+    expect(screen.getByText('Approve direction')).toBeInTheDocument();
+  });
+
   it('sets and removes a WIP limit from the in-app column editor', async () => {
     const user = userEvent.setup();
     const initialDocument = featureWorkspace();
@@ -516,19 +769,19 @@ describe('board and list task management', () => {
     }
 
     renderWithPreferences(<BoardHarness />);
-    const plannedColumn = screen.getByRole('heading', { name: 'Planned' }).closest<HTMLElement>('.board-column')!;
+    const plannedColumn = screen.getByRole('heading', { name: 'Stuck' }).closest<HTMLElement>('.board-column')!;
 
     await user.click(within(plannedColumn).getByRole('button', { name: 'Column options' }));
     await user.click(screen.getByRole('button', { name: 'Set WIP limit' }));
     const editor = screen.getByRole('form', { name: 'Set WIP limit' });
     const limitInput = within(editor).getByRole('spinbutton', { name: 'Work-in-progress limit (leave empty for none)' });
-    expect(limitInput).toHaveValue(5);
+    expect(limitInput).toHaveValue(null);
+    expect(within(editor).queryByRole('button', { name: 'Disable WIP limit' })).not.toBeInTheDocument();
 
-    await user.clear(limitInput);
     await user.type(limitInput, '0');
     await user.click(within(editor).getByRole('button', { name: 'Save changes' }));
     expect(within(editor).getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
-    expect(within(plannedColumn).getByText('1/5')).toBeInTheDocument();
+    expect(plannedColumn.querySelector('.column-heading small')).not.toBeInTheDocument();
 
     await user.clear(limitInput);
     await user.type(limitInput, '2');
@@ -538,9 +791,14 @@ describe('board and list task management', () => {
     await user.click(within(plannedColumn).getByRole('button', { name: 'Column options' }));
     await user.click(screen.getByRole('button', { name: 'Set WIP limit' }));
     const updatedEditor = screen.getByRole('form', { name: 'Set WIP limit' });
-    await user.clear(within(updatedEditor).getByRole('spinbutton'));
-    await user.click(within(updatedEditor).getByRole('button', { name: 'Save changes' }));
-    expect(within(plannedColumn).queryByText('1/2')).not.toBeInTheDocument();
+    await user.click(within(updatedEditor).getByRole('button', { name: 'Disable WIP limit' }));
+    expect(plannedColumn.querySelector('.column-heading small')).not.toBeInTheDocument();
+
+    await user.click(within(plannedColumn).getByRole('button', { name: 'Column options' }));
+    await user.click(screen.getByRole('button', { name: 'Set WIP limit' }));
+    const disabledEditor = screen.getByRole('form', { name: 'Set WIP limit' });
+    expect(within(disabledEditor).getByRole('spinbutton')).toHaveValue(null);
+    expect(within(disabledEditor).queryByRole('button', { name: 'Disable WIP limit' })).not.toBeInTheDocument();
   });
 
   it('keeps the column dropdown outside clipped board containers', async () => {
@@ -766,6 +1024,43 @@ describe('board and list task management', () => {
     }));
   });
 
+  it('shares the all-projects selection with the timeline and restores it after reload', async () => {
+    const user = userEvent.setup();
+    const document = featureWorkspace();
+    const callbacks = commonViewCallbacks();
+    const view = renderWithPreferences(
+      <KanbanBoard
+        document={document}
+        project={document.projects[0]}
+        saveState="idle"
+        dirty={false}
+        onChangeView={vi.fn()}
+        {...callbacks}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Mission scope' }));
+    await user.click(screen.getByRole('option', { name: /All projects/ }));
+    expect(callbacks.onAction).toHaveBeenCalledWith({ type: 'setProjectScope', scope: 'all' });
+
+    const saved = workspaceReducer(document, { type: 'setProjectScope', scope: 'all' });
+    const reloaded = normalizeWorkspaceDocument(JSON.parse(JSON.stringify(saved)) as WorkspaceDocument);
+    view.unmount();
+    renderWithPreferences(
+      <TimelineView
+        document={reloaded}
+        project={reloaded.projects[0]}
+        saveState="idle"
+        dirty={false}
+        onCreateTask={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Mission scope' })).toHaveTextContent('All projects');
+    expect(screen.getByText('Map pages')).toBeInTheDocument();
+  });
+
   it('keeps mobile board controls compact and can switch to horizontal columns', async () => {
     const user = userEvent.setup();
     vi.mocked(window.matchMedia).mockReturnValue({
@@ -830,7 +1125,7 @@ describe('board and list task management', () => {
     expect(screen.getByText('No matching tasks')).toBeInTheDocument();
     await user.clear(screen.getByPlaceholderText('Search tasks'));
     await user.click(screen.getByRole('button', { name: 'Add task' }));
-    expect(onCreateTask).toHaveBeenCalledWith({ columnId: 'planned' });
+    expect(onCreateTask).toHaveBeenCalledWith({ columnId: 'backlog' });
 
     await user.click(screen.getByRole('button', { name: 'Board' }));
     expect(onChangeView).toHaveBeenCalledWith('board');
@@ -942,15 +1237,55 @@ describe('timeline, roadmap, canvas, and files', () => {
     expect(callbacks.onAction).toHaveBeenCalledWith({ type: 'setTimelineLayout', layout: 'compact' });
     await user.click(headingAddTask);
     expect(onCreateTask).toHaveBeenCalledWith(expect.objectContaining({
-      columnId: 'planned',
+      columnId: 'backlog',
       startDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       dueDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
     }));
     await user.click(unscheduledAddTask);
-    expect(onCreateTask).toHaveBeenLastCalledWith({ columnId: 'planned' });
+    expect(onCreateTask).toHaveBeenLastCalledWith({ columnId: 'backlog' });
   });
 
-  it('shows the previous and current week together and keeps single-day titles visible in year view', async () => {
+  it('keeps completion and delete quick actions off scheduled and unscheduled timeline cards', async () => {
+    const user = userEvent.setup();
+    const document = createEmptyWorkspace('Timeline card actions');
+    const project = document.projects[0];
+    const sunday = new Date();
+    sunday.setHours(12, 0, 0, 0);
+    sunday.setDate(sunday.getDate() - sunday.getDay());
+    const scheduledDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`;
+    const scheduledTask = createWorkItem(project.id, 'planned', 'Finish timeline mission', 1000, { startDate: scheduledDate, dueDate: scheduledDate });
+    const unscheduledTask = createWorkItem(project.id, 'planned', 'Plan another mission', 1001);
+    document.items = { [scheduledTask.id]: scheduledTask, [unscheduledTask.id]: unscheduledTask };
+    const onOpenTask = vi.fn();
+
+    renderWithPreferences(
+      <TimelineView
+        document={document}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        onAction={vi.fn()}
+        onOpenTask={onOpenTask}
+        onCreateTask={vi.fn()}
+        onSave={vi.fn()}
+        onEditProject={vi.fn()}
+      />,
+    );
+
+    const scheduledSlot = window.document.querySelector<HTMLElement>(`[data-timeline-task-id="${scheduledTask.id}"]`)!;
+    const unscheduledCard = screen.getByRole('heading', { name: unscheduledTask.title }).closest<HTMLElement>('.task-card')!;
+    expect(within(scheduledSlot).queryByRole('checkbox', { name: /Mark .* as complete/ })).not.toBeInTheDocument();
+    expect(within(scheduledSlot).queryByRole('button', { name: `Delete ${scheduledTask.title}` })).not.toBeInTheDocument();
+    expect(within(unscheduledCard).queryByRole('checkbox', { name: /Mark .* as complete/ })).not.toBeInTheDocument();
+    expect(within(unscheduledCard).queryByRole('button', { name: `Delete ${unscheduledTask.title}` })).not.toBeInTheDocument();
+
+    await user.click(scheduledSlot.querySelector<HTMLElement>('.timeline-bar')!);
+    await user.click(within(unscheduledCard).getByRole('heading', { name: unscheduledTask.title }));
+    expect(onOpenTask).toHaveBeenNthCalledWith(1, scheduledTask);
+    expect(onOpenTask).toHaveBeenNthCalledWith(2, unscheduledTask);
+  });
+
+  it('starts two-week sprints on the current Sunday and remembers each timeline position', async () => {
     const user = userEvent.setup();
     const document = featureWorkspace();
     const project = document.projects[0];
@@ -958,14 +1293,51 @@ describe('timeline, roadmap, canvas, and files', () => {
     sunday.setHours(12, 0, 0, 0);
     sunday.setDate(sunday.getDate() - sunday.getDay());
     const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-    const previousWeekDate = new Date(sunday);
-    previousWeekDate.setDate(previousWeekDate.getDate() - 3);
     const currentWeekDate = new Date(sunday);
     currentWeekDate.setDate(currentWeekDate.getDate() + 1);
-    const previousTask = createWorkItem(project.id, 'planned', 'Previous-week timeline task', 1000, { startDate: localDate(previousWeekDate), dueDate: localDate(previousWeekDate) });
-    const currentTask = createWorkItem(project.id, 'planned', 'Current-week timeline task', 2000, { startDate: localDate(currentWeekDate), dueDate: localDate(currentWeekDate) });
-    document.items = { [previousTask.id]: previousTask, [currentTask.id]: currentTask };
+    const followingWeekDate = new Date(sunday);
+    followingWeekDate.setDate(followingWeekDate.getDate() + 8);
+    const currentTask = createWorkItem(project.id, 'planned', 'Current-week timeline task', 1000, { startDate: localDate(currentWeekDate), dueDate: localDate(currentWeekDate) });
+    const followingTask = createWorkItem(project.id, 'planned', 'Following-week timeline task', 2000, { startDate: localDate(followingWeekDate), dueDate: localDate(followingWeekDate) });
+    document.items = { [currentTask.id]: currentTask, [followingTask.id]: followingTask };
+    const callbacks = commonViewCallbacks();
 
+    const view = renderWithPreferences(
+      <TimelineView
+        document={document}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        onCreateTask={vi.fn()}
+        {...callbacks}
+      />,
+    );
+
+    const firstVisibleDate = () => window.document.querySelector<HTMLElement>('.timeline-days > div')?.dataset.date;
+    expect(screen.getByText('Current-week timeline task')).toBeInTheDocument();
+    expect(screen.getByText('Following-week timeline task')).toBeInTheDocument();
+    expect(firstVisibleDate()).toBe(localDate(sunday));
+
+    await user.click(screen.getByRole('button', { name: 'Next range' }));
+    const nextSunday = new Date(sunday);
+    nextSunday.setDate(nextSunday.getDate() + 7);
+    expect(firstVisibleDate()).toBe(localDate(nextSunday));
+    expect(callbacks.onAction).toHaveBeenCalledWith({
+      type: 'setTimelineWindowStart',
+      zoom: 'two-weeks',
+      startDate: localDate(nextSunday),
+    });
+
+    await user.click(screen.getByRole('button', { name: '4 weeks' }));
+    expect(firstVisibleDate()).toBe(localDate(sunday));
+    await user.click(screen.getByRole('button', { name: '2 weeks' }));
+    expect(firstVisibleDate()).toBe(localDate(nextSunday));
+
+    await user.click(screen.getByRole('button', { name: 'Today' }));
+    expect(firstVisibleDate()).toBe(localDate(sunday));
+
+    view.unmount();
+    document.preferences.timelineWindowStarts = { 'two-weeks': localDate(nextSunday) };
     renderWithPreferences(
       <TimelineView
         document={document}
@@ -976,25 +1348,7 @@ describe('timeline, roadmap, canvas, and files', () => {
         {...commonViewCallbacks()}
       />,
     );
-
-    expect(screen.getByText('Previous-week timeline task')).toBeInTheDocument();
-    expect(screen.getByText('Current-week timeline task')).toBeInTheDocument();
-    const expectedStart = new Date(sunday);
-    expectedStart.setDate(expectedStart.getDate() - 7);
-    expect(window.document.querySelector<HTMLElement>('.timeline-days > div')?.dataset.date).toBe(localDate(expectedStart));
-
-    const style = window.document.createElement('style');
-    const globalStyles = readFileSync('src/styles/global.css', 'utf8');
-    style.textContent = globalStyles.match(/\.timeline-year-board \.timeline-bar-slot\.single-day \.timeline-bar-copy \{[^}]+\}/)?.[0] ?? '';
-    window.document.head.append(style);
-    await user.click(screen.getByRole('button', { name: 'Year' }));
-    const yearSlot = window.document.querySelector<HTMLElement>(`[data-timeline-task-id="${previousTask.id}"]`)!;
-    const titleCopy = yearSlot.querySelector<HTMLElement>('.timeline-bar-copy')!;
-    const titleDisplay = window.getComputedStyle(titleCopy).display;
-    style.remove();
-
-    expect(titleCopy).toHaveTextContent('Previous-week timeline task');
-    expect(titleDisplay).not.toBe('none');
+    expect(firstVisibleDate()).toBe(localDate(nextSunday));
   });
 
   it('alternates exactly two week shades across 2-week, 4-week, and year timelines', async () => {
@@ -1292,18 +1646,49 @@ describe('timeline, roadmap, canvas, and files', () => {
 
     const unscheduledSection = screen.getByText('Unscheduled work').closest('section')!;
     const columnNames = within(unscheduledSection).getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent);
-    expect(columnNames).toEqual(['Backlog', 'Planned', 'In progress', 'Done']);
-    const plannedColumn = within(unscheduledSection).getByRole('heading', { name: 'Planned' }).closest<HTMLElement>('.board-column')!;
+    expect(columnNames).toEqual(['Backlog', 'Stuck', 'In progress', 'Done']);
+    const plannedColumn = within(unscheduledSection).getByRole('heading', { name: 'Stuck' }).closest<HTMLElement>('.board-column')!;
     const plannedCard = within(plannedColumn).getByRole('heading', { name: 'Refine launch brief' }).closest<HTMLElement>('.task-card')!;
     expect(plannedCard).toHaveClass('timeline-task-card-compact');
     expect(plannedCard).not.toHaveTextContent('Turn the rough notes into a clear handoff');
     expect(plannedCard).not.toHaveTextContent('Outline the brief');
-    expect(within(plannedCard).getByTitle('Subtasks: 1/2')).toHaveTextContent('1/2');
+    const compactSubtaskTrigger = within(plannedCard).getByRole('button', { name: 'Subtasks: Refine launch brief' });
+    expect(compactSubtaskTrigger).toHaveTextContent('1/2');
+    expect(compactSubtaskTrigger).toHaveAttribute('aria-expanded', 'false');
     expect(within(unscheduledSection).queryByText('Prepare launch')).not.toBeInTheDocument();
+
+    await user.click(compactSubtaskTrigger);
+    const compactSubtaskPanel = within(plannedCard).getByRole('region', { name: 'Subtasks: Refine launch brief' });
+    expect(compactSubtaskTrigger).toHaveAttribute('aria-expanded', 'true');
+    expect(within(compactSubtaskPanel).getByText('Outline the brief')).toBeInTheDocument();
+    await user.click(within(compactSubtaskPanel).getByRole('button', { name: 'Add a subtask' }));
+    const compactSubtaskInput = within(compactSubtaskPanel).getByRole('textbox', { name: 'Add a subtask' });
+    await user.type(compactSubtaskInput, 'Confirm launch copy{Enter}');
+    expect(callbacks.onAction).toHaveBeenCalledWith({
+      type: 'updateItem',
+      itemId: planned.id,
+      changes: {
+        subtasks: [
+          ...planned.subtasks,
+          expect.objectContaining({ title: 'Confirm launch copy', completed: false }),
+        ],
+      },
+    });
+    await user.click(compactSubtaskTrigger);
+    expect(within(plannedCard).queryByRole('region', { name: 'Subtasks: Refine launch brief' })).not.toBeInTheDocument();
+
+    const doneColumn = within(unscheduledSection).getByRole('heading', { name: 'Done' }).closest<HTMLElement>('.board-column')!;
+    const noSubtaskCard = within(doneColumn).getByRole('heading', { name: 'Approve direction' }).closest<HTMLElement>('.task-card')!;
+    const addFirstSubtask = within(noSubtaskCard).getByRole('button', { name: 'Subtasks: Approve direction' });
+    expect(addFirstSubtask).not.toHaveTextContent('0/0');
+    expect(addFirstSubtask).toHaveClass('empty');
+    await user.click(addFirstSubtask);
+    expect(within(noSubtaskCard).getByRole('textbox', { name: 'Add a subtask' })).toHaveFocus();
+    await user.click(addFirstSubtask);
 
     await user.click(plannedCard);
     expect(callbacks.onOpenTask).toHaveBeenCalledWith(planned);
-    await user.click(within(plannedColumn).getByRole('button', { name: 'Add task to Planned' }));
+    await user.click(within(plannedColumn).getByRole('button', { name: 'Add task to Stuck' }));
     expect(onCreateTask).toHaveBeenCalledWith({ columnId: 'planned' });
 
     const globalStyles = readFileSync('src/styles/global.css', 'utf8');
@@ -1320,6 +1705,9 @@ describe('timeline, roadmap, canvas, and files', () => {
       globalStyles.match(/\.unscheduled-kanban-column \.column-header \{[^}]+\}/)?.[0],
       globalStyles.match(/\.unscheduled-kanban-column \.column-heading h2 \{[^}]+\}/)?.[0],
       globalStyles.match(/\.unscheduled-kanban-column \.task-card\.timeline-task-card-compact \{[^}]+\}/)?.[0],
+      globalStyles.match(/\.unscheduled-kanban-column \.timeline-task-card-compact h3 \{[^}]+\}/)?.[0],
+      globalStyles.match(/button\.compact-task-subtasks \{[^}]+\}/)?.[0],
+      globalStyles.match(/button\.compact-task-subtasks\.empty \{[^}]+\}/)?.[0],
     ].filter(Boolean).join('\n');
     window.document.head.append(style);
     const timelineContent = window.document.querySelector<HTMLElement>('.timeline-content')!;
@@ -1335,9 +1723,16 @@ describe('timeline, roadmap, canvas, and files', () => {
     expect(window.getComputedStyle(kanbanScroll).overscrollBehaviorY).toBe('auto');
     expect(window.getComputedStyle(kanbanScroll).scrollbarGutter).toBe('stable');
     expect(window.getComputedStyle(columnHeader).minHeight).toBe('42px');
-    expect(window.getComputedStyle(within(plannedColumn).getByRole('heading', { name: 'Planned' })).fontSize).toBe('12px');
+    expect(window.getComputedStyle(within(plannedColumn).getByRole('heading', { name: 'Stuck' })).fontSize).toBe('12px');
     expect(window.getComputedStyle(plannedCard).minHeight).toBe('42px');
     expect(window.getComputedStyle(plannedCard).display).toBe('flex');
+    const plannedTitle = within(plannedCard).getByRole('heading', { name: 'Refine launch brief' });
+    expect(window.getComputedStyle(plannedTitle).whiteSpace).toBe('pre-wrap');
+    expect(window.getComputedStyle(plannedTitle).overflow).toBe('visible');
+    expect(window.getComputedStyle(plannedTitle).textOverflow).toBe('clip');
+    expect(window.getComputedStyle(compactSubtaskTrigger).minWidth).toBe('0px');
+    expect(window.getComputedStyle(addFirstSubtask).width).toBe('30px');
+    expect(window.getComputedStyle(addFirstSubtask).borderStyle).toBe('none');
     const planner = window.document.querySelector<HTMLElement>('.timeline-planner-sticky')!;
     (['light', 'dark'] as const).forEach((theme) => (['ltr', 'rtl'] as const).forEach((direction) => {
       window.document.documentElement.dataset.theme = theme;

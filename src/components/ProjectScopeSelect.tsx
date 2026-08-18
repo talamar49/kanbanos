@@ -1,9 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Check, ChevronDown, Folder, Layers3 } from 'lucide-react';
-import type { Project } from '../domain/types';
+import type { Project, ProjectScope } from '../domain/types';
 import { useI18n } from '../i18n';
-
-export type ProjectScope = 'current' | 'all';
 
 type Props = {
   project: Project;

@@ -1,7 +1,9 @@
 export type WorkspaceView = 'board' | 'list' | 'timeline' | 'canvas' | 'roadmap' | 'files';
 
 export type RoadmapHorizon = 'Now' | 'Next' | 'Later';
+export type ProjectScope = 'current' | 'all';
 export type TimelineLayout = 'tasks' | 'compact';
+export type TimelineZoom = 'week' | 'month' | 'two-weeks' | 'four-weeks' | 'year';
 
 export type CanvasPoint = { x: number; y: number };
 
@@ -223,7 +225,10 @@ export type WorkspaceDocument = {
   preferences: {
     activeProjectId: string;
     roadmapHorizonOrder?: RoadmapHorizon[];
+    projectScope?: ProjectScope;
     timelineLayout?: TimelineLayout;
+    timelineZoom?: TimelineZoom;
+    timelineWindowStarts?: Partial<Record<TimelineZoom, string>>;
     collapsedKanbanSubtaskItemIds?: string[];
   };
 };
@@ -235,6 +240,8 @@ export type TaskDraft = {
   startDate?: string;
   dueDate?: string;
   estimateMinutes?: number;
+  labels?: string[];
+  insertAt?: 'top' | 'bottom';
 };
 
 export type WorkspaceAction =
@@ -250,7 +257,10 @@ export type WorkspaceAction =
   | { type: 'deleteItem'; itemId: string }
   | { type: 'moveItem'; itemId: string; columnId: string; index: number }
   | { type: 'reorderKanbanItems'; projectId: string; itemIds: string[] }
+  | { type: 'setProjectScope'; scope: ProjectScope }
   | { type: 'setTimelineLayout'; layout: TimelineLayout }
+  | { type: 'setTimelineZoom'; zoom: TimelineZoom }
+  | { type: 'setTimelineWindowStart'; zoom: TimelineZoom; startDate: string }
   | { type: 'setKanbanSubtasksCollapsed'; itemId: string; collapsed: boolean }
   | { type: 'reorderRoadmapColumns'; horizons: RoadmapHorizon[] }
   | { type: 'canvasAddView'; projectId: string; view: CanvasWorkspaceView }

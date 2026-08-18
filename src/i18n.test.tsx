@@ -6,6 +6,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { HEBREW_TRANSLATIONS, PreferencesProvider, useI18n } from './i18n';
 import { PreferencesControls } from './components/PreferencesControls';
 
+function BidiInputProbe() {
+  return (
+    <div>
+      <input aria-label="Mixed title" defaultValue="משימה release" />
+      <textarea aria-label="Mixed description" defaultValue="תיאור English" />
+      <input aria-label="Repository URL" type="url" defaultValue="https://example.com" />
+      <input aria-label="Explicit technical value" dir="ltr" defaultValue="main/ענף" />
+    </div>
+  );
+}
+
 function PreferenceProbe() {
   const { direction, language, locale, setLanguage, setTheme, t, theme, toggleTheme } = useI18n();
   return (
@@ -74,6 +85,15 @@ describe('internationalization and themes', () => {
     await waitFor(() => expect(setTheme).toHaveBeenCalledWith('dark'));
     expect(document.documentElement).toHaveAttribute('dir', 'rtl');
     expect(document.documentElement.style.colorScheme).toBe('dark');
+  });
+
+  it('automatically follows the first strong character in every text input', () => {
+    render(<PreferencesProvider><BidiInputProbe /></PreferencesProvider>);
+
+    expect(screen.getByRole('textbox', { name: 'Mixed title' })).toHaveAttribute('dir', 'auto');
+    expect(screen.getByRole('textbox', { name: 'Mixed description' })).toHaveAttribute('dir', 'auto');
+    expect(screen.getByRole('textbox', { name: 'Repository URL' })).not.toHaveAttribute('dir');
+    expect(screen.getByRole('textbox', { name: 'Explicit technical value' })).toHaveAttribute('dir', 'ltr');
   });
 
   it('switches language and theme from the shared preference controls', async () => {

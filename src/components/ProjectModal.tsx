@@ -6,16 +6,28 @@ import { useI18n } from '../i18n';
 
 type Props = {
   project?: Project;
+  existingProjects: readonly Project[];
   initialTargetDate?: string;
   onAction: (action: WorkspaceAction) => void;
   onClose: () => void;
 };
 
-export function ProjectModal({ project, initialTargetDate, onAction, onClose }: Props) {
+function nextProjectColor(projects: readonly Project[]): string {
+  const colorCounts = new Map(PROJECT_COLORS.map((color) => [color, 0]));
+  projects.forEach((project) => {
+    const color = project.color.toLowerCase();
+    if (colorCounts.has(color)) colorCounts.set(color, (colorCounts.get(color) ?? 0) + 1);
+  });
+  return PROJECT_COLORS.reduce((best, color) =>
+    (colorCounts.get(color) ?? 0) < (colorCounts.get(best) ?? 0) ? color : best
+  );
+}
+
+export function ProjectModal({ project, existingProjects, initialTargetDate, onAction, onClose }: Props) {
   const { t } = useI18n();
   const [name, setName] = useState(project?.name ?? '');
   const [description, setDescription] = useState(project?.description ?? '');
-  const [color, setColor] = useState(project?.color ?? PROJECT_COLORS[0]);
+  const [color, setColor] = useState(() => project?.color ?? nextProjectColor(existingProjects));
   const [targetDate, setTargetDate] = useState(project?.targetDate ?? initialTargetDate ?? '');
   const lastSaved = useRef('');
   const snapshot = JSON.stringify({ name, description, color, targetDate });

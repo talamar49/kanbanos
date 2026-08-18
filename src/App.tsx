@@ -18,7 +18,7 @@ import { TaskComposerModal } from './components/TaskComposerModal';
 import { TaskModal } from './components/TaskModal';
 import { TimelineView } from './components/TimelineView';
 import type { CanvasPoint, TaskDraft, WorkspaceAction, WorkspaceAttachment, WorkspaceDocument, WorkspaceView } from './domain/types';
-import { canvasViewsForProject, columnForRule, createCanvasNode, createEmptyWorkspace, createWorkItem, isWorkspaceDocument, normalizeWorkspaceDocument, workspaceReducer } from './domain/workspace';
+import { canvasViewsForProject, columnForRule, createCanvasNode, createEmptyWorkspace, createWorkItem, isWorkspaceDocument, labelUsageForItems, normalizeWorkspaceDocument, workspaceReducer } from './domain/workspace';
 import { useI18n } from './i18n';
 import { isNativeMobile } from './platform/runtime';
 import { useCompactLayout } from './platform/useCompactLayout';
@@ -65,6 +65,10 @@ export default function App() {
   const revisionRef = useRef(0);
   const saveInFlightRef = useRef(false);
   const syncInFlightRef = useRef(false);
+  const availableLabels = useMemo(() => {
+    const activeProjectIds = new Set(document.projects.filter((project) => !project.archived).map((project) => project.id));
+    return labelUsageForItems(Object.values(document.items).filter((item) => activeProjectIds.has(item.projectId)));
+  }, [document.items, document.projects]);
 
   const notify = useCallback((message: string, kind: Toast['kind'] = 'success') => {
     setToast({ message, kind });
@@ -553,7 +557,11 @@ export default function App() {
   const createTaskFromDraft = (draft: TaskDraft) => {
     if (!taskComposer) return;
     const projectItems = Object.values(document.items).filter((item) => item.projectId === taskComposer.projectId);
-    const rank = Math.max(0, ...projectItems.map((item) => item.moduleData.kanban.rank)) + 1000;
+    const columnItems = projectItems.filter((item) => item.moduleData.kanban.columnId === draft.columnId);
+    const firstColumnRank = Math.min(...columnItems.map((item) => item.moduleData.kanban.rank));
+    const rank = draft.insertAt === 'top'
+      ? (Number.isFinite(firstColumnRank) ? firstColumnRank - 1000 : 1000)
+      : Math.max(0, ...projectItems.map((item) => item.moduleData.kanban.rank)) + 1000;
     const task = createWorkItem(taskComposer.projectId, draft.columnId, draft.title, rank, draft);
     if (document.preferences.activeProjectId !== taskComposer.projectId) {
       applyAction({ type: 'selectProject', projectId: taskComposer.projectId });
@@ -805,6 +813,7 @@ export default function App() {
           <TaskComposerModal
             project={taskProject}
             columns={taskColumns}
+            availableLabels={availableLabels}
             preset={taskComposer.preset}
             onCreate={createTaskFromDraft}
             onClose={() => { setTaskComposer(null); setPendingCanvasTask(null); }}
@@ -816,6 +825,7 @@ export default function App() {
           item={openTask}
           columns={document.modules.kanban.projects[openTask.projectId]?.columns ?? []}
           projectTasks={Object.values(document.items).filter((item) => item.projectId === openTask.projectId)}
+          availableLabels={availableLabels}
           attachments={(openTask.attachmentIds ?? []).map((attachmentId) => document.resources.attachments[attachmentId]).filter(Boolean)}
           onAction={applyAction}
           onAddAttachments={(kind) => addTaskAttachments(openTask.id, kind)}
@@ -857,6 +867,7 @@ export default function App() {
           project={projectModal.mode === 'edit'
             ? document.projects.find((project) => project.id === projectModal.projectId)
             : undefined}
+          existingProjects={document.projects}
           initialTargetDate={projectModal.targetDate}
           onAction={applyAction}
           onClose={() => setProjectModal(null)}

@@ -287,6 +287,33 @@ describe('attachments and deletion cleanup', () => {
 });
 
 describe('preferences and normalization', () => {
+  it('persists the shared Kanban and timeline project scope when the workspace is reloaded', () => {
+    const document = createEmptyWorkspace();
+    const allProjects = workspaceReducer(document, { type: 'setProjectScope', scope: 'all' });
+
+    expect(allProjects.preferences.projectScope).toBe('all');
+    expect(isWorkspaceDocument(JSON.parse(JSON.stringify(allProjects)))).toBe(true);
+    const reloaded = normalizeWorkspaceDocument(JSON.parse(JSON.stringify(allProjects)) as WorkspaceDocument);
+    expect(reloaded.preferences.projectScope).toBe('all');
+  });
+
+  it('persists timeline positions when the workspace is saved and reloaded', () => {
+    const document = createEmptyWorkspace();
+    const zoomed = workspaceReducer(document, { type: 'setTimelineZoom', zoom: 'four-weeks' });
+    const positioned = workspaceReducer(zoomed, {
+      type: 'setTimelineWindowStart',
+      zoom: 'two-weeks',
+      startDate: '2026-08-23',
+    });
+
+    expect(positioned.preferences.timelineZoom).toBe('four-weeks');
+    expect(positioned.preferences.timelineWindowStarts).toEqual({ 'two-weeks': '2026-08-23' });
+    expect(isWorkspaceDocument(JSON.parse(JSON.stringify(positioned)))).toBe(true);
+    const reloaded = normalizeWorkspaceDocument(JSON.parse(JSON.stringify(positioned)) as WorkspaceDocument);
+    expect(reloaded.preferences.timelineZoom).toBe('four-weeks');
+    expect(reloaded.preferences.timelineWindowStarts).toEqual({ 'two-weeks': '2026-08-23' });
+  });
+
   it('loads and normalizes legacy documents through the reducer', () => {
     const { document, firstId } = workspaceWithTasks();
     const legacy = {
@@ -302,6 +329,7 @@ describe('preferences and normalization', () => {
     expect(loaded.items[firstId]).toMatchObject({ dependencyIds: [], attachmentIds: [], links: [] });
     expect(loaded.modules.canvas.projects[document.projects[0].id]).toEqual(createCanvasProject());
     expect(loaded.resources.attachments).toEqual({});
+    expect(loaded.preferences.projectScope).toBe('current');
   });
 
   it('normalizes horizon order, stale collapse ids, invalid connections, and viewport bounds', () => {
@@ -534,6 +562,7 @@ describe('workspace document validation', () => {
       { ...valid, modules: { ...valid.modules, kanban: { ...valid.modules.kanban, projects: { [projectId]: { columns: [{ id: 1, title: 'Bad' }] } } } } },
       { ...valid, resources: { attachments: { bad: { ...attachment(), kind: 'link' } } } },
       { ...valid, preferences: { ...valid.preferences, timelineLayout: 'wide' } },
+      { ...valid, preferences: { ...valid.preferences, projectScope: 'favorites' } },
       { ...valid, preferences: { ...valid.preferences, collapsedKanbanSubtaskItemIds: [1] } },
       { ...valid, modules: { ...valid.modules, canvas: { version: 2, projects: {} } } },
     ];

@@ -7,10 +7,13 @@ import {
   createCanvasStroke,
   createCanvasView,
   columnForRule,
+  completionToggleColumn,
   createEmptyWorkspace,
   createWorkItem,
+  isTaskCompleted,
   isWorkspaceDocument,
   itemsForColumn,
+  labelUsageForItems,
   normalizeWorkspaceDocument,
   workspaceReducer,
 } from './workspace';
@@ -22,10 +25,60 @@ describe('workspace domain', () => {
     expect(workspace.workspace.name).toBe('Design team');
     expect(workspace.projects).toHaveLength(1);
     const columns = workspace.modules.kanban.projects[workspace.projects[0].id].columns;
-    expect(columns).toHaveLength(4);
-    expect(columnForRule(columns, 'new-task')?.id).toBe('planned');
+    expect(columns.map((column) => ({ id: column.id, title: column.title, limit: column.limit }))).toEqual([
+      { id: 'backlog', title: 'Backlog', limit: undefined },
+      { id: 'planned', title: 'Stuck', limit: undefined },
+      { id: 'progress', title: 'In progress', limit: undefined },
+      { id: 'done', title: 'Done', limit: undefined },
+    ]);
+    expect(columnForRule(columns, 'new-task')?.id).toBe('backlog');
     expect(columnForRule(columns, 'completed')?.id).toBe('done');
     expect(isWorkspaceDocument(workspace)).toBe(true);
+  });
+
+  it('resolves card completion toggles from the configured column rules', () => {
+    const workspace = createEmptyWorkspace();
+    const projectId = workspace.projects[0].id;
+    const task = createWorkItem(projectId, 'planned', 'Ship the release', 1000);
+    const columns = workspace.modules.kanban.projects[projectId].columns.map((column) => ({
+      ...column,
+      rules: column.id === 'progress' ? ['completed' as const] : column.id === 'done' ? ['new-task' as const] : [],
+    }));
+    const document = {
+      ...workspace,
+      items: { [task.id]: task },
+      modules: {
+        ...workspace.modules,
+        kanban: {
+          ...workspace.modules.kanban,
+          projects: { ...workspace.modules.kanban.projects, [projectId]: { columns } },
+        },
+      },
+    };
+
+    expect(isTaskCompleted(document, task)).toBe(false);
+    expect(completionToggleColumn(document, task)?.id).toBe('progress');
+
+    const completed = workspaceReducer(document, { type: 'moveItem', itemId: task.id, columnId: 'progress', index: 0 });
+    expect(isTaskCompleted(completed, completed.items[task.id])).toBe(true);
+    expect(completionToggleColumn(completed, completed.items[task.id])?.id).toBe('done');
+  });
+
+  it('derives reusable labels only from tasks that still use them', () => {
+    const workspace = createEmptyWorkspace();
+    const projectId = workspace.projects[0].id;
+    const first = createWorkItem(projectId, 'planned', 'First', 1000, { labels: ['Release', ' Design ', 'release'] });
+    const second = createWorkItem(projectId, 'planned', 'Second', 2000, { labels: ['RELEASE'] });
+
+    expect(labelUsageForItems([first, second])).toEqual([
+      { label: 'Design', count: 1 },
+      { label: 'Release', count: 2 },
+    ]);
+    expect(labelUsageForItems([])).toEqual([]);
+
+    const normalized = normalizeWorkspaceDocument({ ...workspace, items: { [first.id]: first, [second.id]: second } });
+    expect(normalized.items[first.id].labels).toEqual(['Release', 'Design']);
+    expect(normalized.items[second.id].labels).toEqual(['Release']);
   });
 
   it('keeps planning details on tasks so timeline and estimate views share one source of truth', () => {
@@ -130,6 +183,39 @@ describe('workspace domain', () => {
 
     expect(normalized.resources.attachments).toEqual({});
     expect(normalized.items[task.id].links).toEqual([]);
+  });
+
+  it('folds previously parent-linked tasks back into the father task checklist', () => {
+    const workspace = createEmptyWorkspace();
+    const projectId = workspace.projects[0].id;
+    const father = createWorkItem(projectId, 'planned', 'Launch mission', 1000, {
+      subtasks: [{ id: 'existing-step', title: 'Keep existing step', completed: false }],
+    });
+    const child = {
+      ...createWorkItem(projectId, 'planned', 'Prepare campaign', 2000),
+      parentId: father.id,
+      hierarchyRank: 1000,
+    };
+    const grandchild = {
+      ...createWorkItem(projectId, 'done', 'Write announcement', 3000),
+      parentId: child.id,
+      hierarchyRank: 1000,
+    };
+    const storedHierarchy = {
+      ...workspace,
+      items: { [father.id]: father, [child.id]: child, [grandchild.id]: grandchild },
+    } as unknown as typeof workspace;
+
+    const normalized = normalizeWorkspaceDocument(JSON.parse(JSON.stringify(storedHierarchy)) as typeof workspace);
+
+    expect(Object.keys(normalized.items)).toEqual([father.id]);
+    expect(normalized.items[father.id].subtasks).toEqual([
+      { id: 'existing-step', title: 'Keep existing step', completed: false },
+      { id: child.id, title: 'Prepare campaign', completed: false },
+      { id: grandchild.id, title: 'Write announcement', completed: true },
+    ]);
+    expect(normalized.items[father.id]).not.toHaveProperty('parentId');
+    expect(normalized.items[father.id]).not.toHaveProperty('hierarchyRank');
   });
 
   it('migrates legacy column identities into durable rules', () => {

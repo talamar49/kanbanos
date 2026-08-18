@@ -1,8 +1,8 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
-import { createEmptyWorkspace, createWorkItem } from './domain/workspace';
+import { createEmptyWorkspace, createWorkItem, itemsForColumn } from './domain/workspace';
 import { PreferencesProvider } from './i18n';
 
 function desktopApi(options: {
@@ -144,18 +144,30 @@ describe('Kanbanos app integration', () => {
     render(renderApp());
 
     await user.click(await screen.findByRole('button', { name: 'Create a new workspace' }));
-    await user.type(screen.getByLabelText('Workspace name'), 'Mobile capture');
+    fireEvent.change(screen.getByLabelText('Workspace name'), { target: { value: 'Mobile capture' } });
     await user.click(screen.getByRole('button', { name: 'Choose location' }));
     await user.click(await screen.findByRole('button', { name: 'Add task to Backlog' }));
     expect(await screen.findByRole('dialog', { name: 'Create task' })).toBeInTheDocument();
-    await user.type(screen.getByLabelText('What needs to happen?'), 'Create from Android board');
+    fireEvent.change(screen.getByLabelText('What needs to happen?'), { target: { value: 'Create from Android board' } });
     await user.click(screen.getByRole('button', { name: 'Create task' }));
 
     expect(await screen.findByText('Create from Android board')).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Task details' })).not.toBeInTheDocument();
-    await waitFor(() => expect(api.workspace.save).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('button', { name: 'Add task to Backlog' }));
+    fireEvent.change(screen.getByLabelText('What needs to happen?'), { target: { value: 'Newest Android task' } });
+    await user.click(screen.getByRole('button', { name: 'Create task' }));
+
+    const backlogColumn = screen.getByRole('heading', { name: 'Backlog' }).closest<HTMLElement>('.board-column')!;
+    const visibleTitles = Array.from(backlogColumn.querySelectorAll<HTMLElement>('.task-card h3')).map((heading) => heading.textContent);
+    expect(visibleTitles).toEqual(['Newest Android task', 'Create from Android board']);
+    await waitFor(() => {
+      const savedDocument = api.workspace.save.mock.calls.at(-1)?.[0] as ReturnType<typeof createEmptyWorkspace> | undefined;
+      expect(savedDocument && itemsForColumn(savedDocument, savedDocument.projects[0].id, 'backlog').map((item) => item.title))
+        .toEqual(['Newest Android task', 'Create from Android board']);
+    });
     expect(screen.queryByText('Saved to the local Git repository.')).not.toBeInTheDocument();
-  });
+  }, 10_000);
 
   it('creates a workspace, captures a task, and persists it through the desktop bridge', async () => {
     const user = userEvent.setup();

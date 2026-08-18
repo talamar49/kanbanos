@@ -36,11 +36,11 @@ import {
   Workflow,
   X,
 } from 'lucide-react';
-import type { KanbanColumn, Project, TaskDraft, TimelineLayout, WorkItem, WorkspaceAction, WorkspaceDocument } from '../domain/types';
+import type { KanbanColumn, Project, ProjectScope, TaskDraft, TimelineLayout, TimelineZoom, WorkItem, WorkspaceAction, WorkspaceDocument } from '../domain/types';
 import { columnForRule, itemsForColumn } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import { PreferencesControls } from './PreferencesControls';
-import { ProjectScopeSelect, type ProjectScope } from './ProjectScopeSelect';
+import { ProjectScopeSelect } from './ProjectScopeSelect';
 import { TaskCard } from './TaskCard';
 
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
@@ -63,7 +63,6 @@ type TimelineDisplayRow = { id: string; entries: ScheduledTask[]; compact?: bool
 type TimelineRowLayout = ScheduledTask & { rowId: string; top: number; height: number; center: number; left: number; right: number };
 type DependencyRope = { startX: number; startY: number; endX: number; endY: number; attached: boolean };
 type ResizePreview = { taskId: string; dueDate: string; deltaPx: number };
-type TimelineZoom = 'week' | 'month' | 'two-weeks' | 'four-weeks' | 'year';
 type TimelineMonthSegment = { id: string; date: Date; startIndex: number; dayCount: number };
 type TimelineYearMonthLayout = { segment: TimelineMonthSegment; days: Date[]; rows: TimelineDisplayRow[] };
 type TimelineFourWeekBandLayout = { id: string; days: Date[]; scheduled: ScheduledTask[]; rows: TimelineDisplayRow[] };
@@ -267,10 +266,24 @@ function startOfWindow(offset: number, zoom: TimelineZoom): Date {
   if (zoom === 'month') return new Date(date.getFullYear(), date.getMonth() + offset, 1, 12);
   const span = zoom === 'week' ? 7 : zoom === 'two-weeks' ? 14 : 28;
   const sundayOffset = date.getDay();
-  const lookback = zoom === 'two-weeks' ? 7 : 0;
   const navigationStep = zoom === 'two-weeks' ? 7 : span;
-  date.setDate(date.getDate() - sundayOffset - lookback + offset * navigationStep);
+  date.setDate(date.getDate() - sundayOffset + offset * navigationStep);
   return date;
+}
+
+function initialTimelineZoom(stored: TimelineZoom | undefined, mobile: boolean): TimelineZoom {
+  const supported: TimelineZoom[] = mobile ? ['week', 'month', 'year'] : ['two-weeks', 'four-weeks', 'year'];
+  return stored && supported.includes(stored) ? stored : mobile ? 'week' : 'two-weeks';
+}
+
+function initialTimelineWindowStarts(stored: WorkspaceDocument['preferences']['timelineWindowStarts']): Record<TimelineZoom, string> {
+  return {
+    week: stored?.week ?? iso(startOfWindow(0, 'week')),
+    month: stored?.month ?? iso(startOfWindow(0, 'month')),
+    'two-weeks': stored?.['two-weeks'] ?? iso(startOfWindow(0, 'two-weeks')),
+    'four-weeks': stored?.['four-weeks'] ?? iso(startOfWindow(0, 'four-weeks')),
+    year: stored?.year ?? iso(startOfWindow(0, 'year')),
+  };
 }
 
 function dateAt(rangeStart: Date, index: number): Date {
@@ -616,7 +629,7 @@ function TimelineTaskBar({
         onClick={() => !isDragging && onOpen()}
         title={`${item.title} · ${projectName ? `${projectName} · ` : ''}${dateLabel} · ${t('Drag to reschedule or reorder')}`}
       >
-        <span className="timeline-bar-copy"><strong>{item.title}</strong><small><i />{projectName ? `${projectName} · ${dateLabel}` : dateLabel}</small></span>
+        <span className="timeline-bar-copy"><strong dir="auto">{item.title}</strong><small dir={projectName ? 'auto' : undefined}><i />{projectName ? `${projectName} · ${dateLabel}` : dateLabel}</small></span>
         {(item.dependencyIds?.length ?? 0) > 0 && <span className="timeline-dependency-count" title={t('{{count}} dependencies', { count: item.dependencyIds?.length ?? 0 })}><Workflow size={10} />{item.dependencyIds?.length}</span>}
       </button>
       {canAcceptDependency && <span className="timeline-dependency-card-prompt"><Workflow size={16} />{t(dependencyTarget.isOver ? 'Release to create dependency' : 'Drop here to create dependency')}</span>}
@@ -674,7 +687,7 @@ function TimelineTaskBar({
                   onClick={() => onUpdateSubtasks(item.subtasks.map((value) => value.id === subtask.id ? { ...value, completed: !value.completed } : value))}
                 >
                   <span>{subtask.completed ? <Check size={10} /> : null}</span>
-                  <em>{subtask.title}</em>
+                  <em dir="auto">{subtask.title}</em>
                 </button>
               ))}
             </div>
@@ -694,6 +707,7 @@ function TimelineTaskBar({
                 }}
                 placeholder={t('Add a subtask')}
                 aria-label={t('Add a subtask')}
+                dir="auto"
               />
               <button
                 type="button"
@@ -742,7 +756,7 @@ function TimelineYearContinuation({ scheduled, projectColor, columnColor, contin
       } as CSSProperties}
     >
       <button className="timeline-bar" onClick={onOpen} title={`${item.title} · ${dateLabel} · ${t(continuationLabel)}`}>
-        <span className="timeline-bar-copy"><strong>{item.title}</strong><small><i />{dateLabel}</small></span>
+        <span className="timeline-bar-copy"><strong dir="auto">{item.title}</strong><small><i />{dateLabel}</small></span>
       </button>
     </div>
   );
@@ -895,8 +909,9 @@ function UnscheduledDropArea({ canDrop, childDropActive, children }: { canDrop: 
 
 export function TimelineView({ document, project, saveState, dirty, onOpenTask, onCreateTask, onAction, onSave, onEditProject, mobile = false }: Props) {
   const { direction, locale, t } = useI18n();
-  const [windowOffset, setWindowOffset] = useState(0);
-  const [zoom, setZoom] = useState<TimelineZoom>(mobile ? 'week' : 'two-weeks');
+  const [windowStarts, setWindowStarts] = useState<Record<TimelineZoom, string>>(() => initialTimelineWindowStarts(document.preferences.timelineWindowStarts));
+  const [zoom, setZoom] = useState<TimelineZoom>(() => initialTimelineZoom(document.preferences.timelineZoom, mobile));
+  const windowStart = windowStarts[zoom];
   const layoutMode = document.preferences.timelineLayout ?? 'tasks';
   const setLayoutMode = (layout: TimelineLayout) => onAction({ type: 'setTimelineLayout', layout });
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -910,7 +925,8 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
   const [recentlyMovedId, setRecentlyMovedId] = useState<string | null>(null);
   const [resizeAnimation, setResizeAnimation] = useState<{ taskId: string; fromScale: number } | null>(null);
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
-  const [scope, setScope] = useState<ProjectScope>('current');
+  const scope = document.preferences.projectScope ?? 'current';
+  const setScope = (nextScope: ProjectScope) => onAction({ type: 'setProjectScope', scope: nextScope });
   const [unscheduledDropPreview, setUnscheduledDropPreview] = useState<UnscheduledDropPreviewState | null>(null);
   const [unscheduledCollapsed, setUnscheduledCollapsed] = useState(false);
   const [unscheduledPaneHeight, setUnscheduledPaneHeight] = useState(() => mobile ? MOBILE_UNSCHEDULED_PANE_HEIGHT : DEFAULT_UNSCHEDULED_PANE_HEIGHT);
@@ -925,11 +941,14 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
   const resizeRowsRef = useRef<HTMLElement | null>(null);
   const resizeStartWidthRef = useRef(0);
 
-  useEffect(() => { setScope('current'); setUnscheduledDropPreview(null); }, [project.id]);
+  useEffect(() => { setUnscheduledDropPreview(null); }, [project.id]);
+  useEffect(() => {
+    setWindowStarts(initialTimelineWindowStarts(document.preferences.timelineWindowStarts));
+  }, [document.preferences.timelineWindowStarts, document.workspace.id]);
   useLayoutEffect(() => {
     if (!mobile) return;
     if (chartScrollRef.current) chartScrollRef.current.scrollLeft = 0;
-  }, [mobile, windowOffset, zoom]);
+  }, [mobile, windowStart, zoom]);
   useEffect(() => {
     if (!paneResizing) return;
     const resizePane = (clientY: number) => {
@@ -964,8 +983,20 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-  const rangeStart = startOfWindow(windowOffset, zoom);
+  const rangeStart = new Date(`${windowStart}T12:00:00`);
   const span = spanForWindow(rangeStart, zoom);
+  const setActiveWindowStart = (nextStart: Date) => {
+    const startDate = iso(nextStart);
+    setWindowStarts((current) => ({ ...current, [zoom]: startDate }));
+    onAction({ type: 'setTimelineWindowStart', zoom, startDate });
+  };
+  const moveActiveWindow = (direction: -1 | 1) => {
+    const nextStart = new Date(rangeStart);
+    if (zoom === 'year') nextStart.setFullYear(nextStart.getFullYear() + direction);
+    else if (zoom === 'month') nextStart.setMonth(nextStart.getMonth() + direction);
+    else nextStart.setDate(nextStart.getDate() + direction * (zoom === 'two-weeks' ? 7 : span));
+    setActiveWindowStart(nextStart);
+  };
   const days = Array.from({ length: span }, (_, index) => dateAt(rangeStart, index));
   const rangeEnd = days[days.length - 1];
   const isYearView = zoom === 'year';
@@ -1696,13 +1727,13 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
           <ProjectScopeSelect project={project} value={scope} onChange={setScope} />
           <div className="timeline-zoom-toggle">
             {zoomOptions.map(({ value, label }) => (
-              <button key={value} className={zoom === value ? 'active' : ''} onClick={() => { setZoom(value); setWindowOffset(0); }}>{t(label)}</button>
+              <button key={value} className={zoom === value ? 'active' : ''} onClick={() => { setZoom(value); onAction({ type: 'setTimelineZoom', zoom: value }); }}>{t(label)}</button>
             ))}
           </div>
           <div className="timeline-controls">
-            <button className="icon-button" onClick={() => setWindowOffset((value) => value - 1)} aria-label={t('Previous range')}><ChevronLeft size={19} /></button>
-            <button onClick={() => setWindowOffset(0)}>{t('Today')}</button>
-            <button className="icon-button" onClick={() => setWindowOffset((value) => value + 1)} aria-label={t('Next range')}><ChevronRight size={19} /></button>
+            <button className="icon-button" onClick={() => moveActiveWindow(-1)} aria-label={t('Previous range')}><ChevronLeft size={19} /></button>
+            <button onClick={() => setActiveWindowStart(startOfWindow(0, zoom))}>{t('Today')}</button>
+            <button className="icon-button" onClick={() => moveActiveWindow(1)} aria-label={t('Next range')}><ChevronRight size={19} /></button>
           </div>
           <button type="button" className="timeline-add-task-button" onClick={() => createForDay(rangeStart)}><Plus size={18} /> {t('Add task')}</button>
         </div>
@@ -2159,7 +2190,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
           </svg>
         )}
         <DragOverlay dropAnimation={{ duration: 240, easing: 'cubic-bezier(.2,.8,.2,1)' }}>
-          {draggedTask && !dependencySourceId ? <div className="timeline-drag-overlay">{reorderTargetId ? <ListChecks size={17} /> : <GripVertical size={17} />}<div><strong>{draggedTask.title}</strong><span>{t(reorderTargetId ? 'Drop to update the Kanban order' : draggedTask.dueDate ? 'Move while preserving its duration' : 'Drop on a day to schedule')}</span></div></div> : null}
+          {draggedTask && !dependencySourceId ? <div className="timeline-drag-overlay">{reorderTargetId ? <ListChecks size={17} /> : <GripVertical size={17} />}<div><strong dir="auto">{draggedTask.title}</strong><span>{t(reorderTargetId ? 'Drop to update the Kanban order' : draggedTask.dueDate ? 'Move while preserving its duration' : 'Drop on a day to schedule')}</span></div></div> : null}
         </DragOverlay>
       </DndContext>
     </main>

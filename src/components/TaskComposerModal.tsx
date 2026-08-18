@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import { Calendar, Clock3, Flag, Layers2, Plus, Sparkles, X } from 'lucide-react';
+import { Calendar, Clock3, Flag, Layers2, Plus, Sparkles, Tag, X } from 'lucide-react';
 import type { KanbanColumn, Priority, Project, TaskDraft } from '../domain/types';
-import { columnForRule, PRIORITY_META } from '../domain/workspace';
+import { columnForRule, PRIORITY_META, type LabelUsage } from '../domain/workspace';
 import { useI18n } from '../i18n';
+import { LabelPicker } from './LabelPicker';
 
 type Props = {
   project: Project;
   columns: KanbanColumn[];
-  preset?: Partial<Pick<TaskDraft, 'columnId' | 'priority' | 'startDate' | 'dueDate' | 'estimateMinutes'>>;
+  availableLabels?: LabelUsage[];
+  preset?: Partial<Pick<TaskDraft, 'columnId' | 'priority' | 'startDate' | 'dueDate' | 'estimateMinutes' | 'labels' | 'insertAt'>>;
   onCreate: (draft: TaskDraft) => void;
   onClose: () => void;
 };
 
-export function TaskComposerModal({ project, columns, preset, onCreate, onClose }: Props) {
+export function TaskComposerModal({ project, columns, availableLabels = [], preset, onCreate, onClose }: Props) {
   const { t } = useI18n();
   const [title, setTitle] = useState('');
   const [columnId, setColumnId] = useState(preset?.columnId ?? columnForRule(columns, 'new-task')?.id ?? '');
@@ -20,6 +22,7 @@ export function TaskComposerModal({ project, columns, preset, onCreate, onClose 
   const [startDate, setStartDate] = useState(preset?.startDate ?? '');
   const [dueDate, setDueDate] = useState(preset?.dueDate ?? '');
   const [estimate, setEstimate] = useState(preset?.estimateMinutes?.toString() ?? '');
+  const [labels, setLabels] = useState(preset?.labels ?? []);
   const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -46,6 +49,8 @@ export function TaskComposerModal({ project, columns, preset, onCreate, onClose 
       startDate: startDate || undefined,
       dueDate: dueDate || undefined,
       estimateMinutes: Number.isFinite(estimateMinutes) ? estimateMinutes : undefined,
+      labels,
+      ...(preset?.insertAt ? { insertAt: preset.insertAt } : {}),
     });
   };
 
@@ -93,8 +98,12 @@ export function TaskComposerModal({ project, columns, preset, onCreate, onClose 
               <span><Clock3 size={15} /> {t('Estimate')}</span>
               <div className="estimate-input"><input type="number" min="0" step="0.25" value={estimate} onChange={(event) => setEstimate(event.target.value)} placeholder="—" /><em>{t('hours')}</em></div>
             </label>
+            <div className="task-composer-label-property">
+              <span><Tag size={15} /> {t('Labels')}</span>
+              <LabelPicker value={labels} options={availableLabels} onChange={setLabels} />
+            </div>
           </div>
-          <p className="task-composer-note"><Sparkles size={14} /> {t('You can add details, labels, subtasks, and an owner right after creating it.')}</p>
+          <p className="task-composer-note"><Sparkles size={14} /> {t('Choose labels now; details, subtasks, and an owner can be added after creating it.')}</p>
         </div>
         <footer className="simple-modal-footer">
           <span><kbd>Ctrl</kbd> <kbd>Enter</kbd> {t('to create')}</span>

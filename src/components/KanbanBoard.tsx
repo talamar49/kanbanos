@@ -40,14 +40,16 @@ import {
   Search,
   Sparkles,
   Rows3,
+  Tag,
   X,
 } from 'lucide-react';
-import type { KanbanColumn, KanbanColumnRule, Priority, Project, TaskDraft, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
-import { columnForRule, createWorkItem, itemsForColumn, KANBAN_COLUMN_RULES, PRIORITY_META } from '../domain/workspace';
+import type { KanbanColumn, KanbanColumnRule, Priority, Project, ProjectScope, TaskDraft, WorkItem, WorkspaceAction, WorkspaceDocument, WorkspaceView } from '../domain/types';
+import { columnForRule, completionToggleColumn, createWorkItem, isTaskCompleted, itemsForColumn, KANBAN_COLUMN_RULES, labelUsageForItems, PRIORITY_META, type LabelUsage } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import { useCompactLayout } from '../platform/useCompactLayout';
+import { LabelPicker } from './LabelPicker';
 import { PreferencesControls } from './PreferencesControls';
-import { ProjectScopeSelect, type ProjectScope } from './ProjectScopeSelect';
+import { ProjectScopeSelect } from './ProjectScopeSelect';
 import { TaskCard } from './TaskCard';
 
 type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
@@ -173,6 +175,12 @@ function isBelowHoveredItem(event: TaskDragEvent): boolean {
   return translated ? translated.top + translated.height / 2 > midpoint : false;
 }
 
+function resizeQuickAddField(field: HTMLTextAreaElement): void {
+  field.style.height = 'auto';
+  field.style.height = `${Math.min(Math.max(field.scrollHeight, 44), 160)}px`;
+  field.style.overflowY = field.scrollHeight > 160 ? 'auto' : 'hidden';
+}
+
 function taskDropIndex(event: TaskDragEvent, itemId: string, targetItems: WorkItem[]): number {
   const destinationItems = targetItems.filter((item) => item.id !== itemId);
   const overData = event.over?.data.current as { type?: string; index?: number } | undefined;
@@ -195,23 +203,29 @@ function taskDropIndex(event: TaskDragEvent, itemId: string, targetItems: WorkIt
 type ColumnProps = {
   column: KanbanColumn;
   items: WorkItem[];
+  firstItemRank?: number;
+  availableLabels: LabelUsage[];
   projectId: string;
   allColumns: KanbanColumn[];
   projectById: ReadonlyMap<string, Project>;
   collapsedSubtaskItemIds: ReadonlySet<string>;
   aggregate: boolean;
   dropPreview?: TaskDropPreviewState & { item: WorkItem };
+  isItemCompleted: (item: WorkItem) => boolean;
   onAction: (action: WorkspaceAction) => void;
   onOpenTask: (item: WorkItem) => void;
+  onToggleItemComplete: (item: WorkItem) => void;
+  onDeleteItem: (item: WorkItem) => void;
   onCreateTask?: (preset?: Partial<TaskDraft>) => void;
   mobile?: boolean;
 };
 
-function TaskDropPreview({ item, columnId, index, subtasksCollapsed, onAction, onOpenTask }: {
+function TaskDropPreview({ item, columnId, index, subtasksCollapsed, completed, onAction, onOpenTask }: {
   item: WorkItem;
   columnId: string;
   index: number;
   subtasksCollapsed: boolean;
+  completed: boolean;
   onAction: (action: WorkspaceAction) => void;
   onOpenTask: (item: WorkItem) => void;
 }) {
@@ -234,6 +248,7 @@ function TaskDropPreview({ item, columnId, index, subtasksCollapsed, onAction, o
         item={item}
         dropPreview
         subtasksCollapsed={subtasksCollapsed}
+        completed={completed}
         onOpen={onOpenTask}
         onUpdateSubtasks={(itemId, subtasks) => onAction({ type: 'updateItem', itemId, changes: { subtasks } })}
         onSetSubtasksCollapsed={(itemId, collapsed) => onAction({ type: 'setKanbanSubtasksCollapsed', itemId, collapsed })}
@@ -242,7 +257,7 @@ function TaskDropPreview({ item, columnId, index, subtasksCollapsed, onAction, o
   );
 }
 
-function BoardColumn({ column, items, projectId, allColumns, projectById, collapsedSubtaskItemIds, aggregate, dropPreview, onAction, onOpenTask, onCreateTask, mobile = false }: ColumnProps) {
+function BoardColumn({ column, items, firstItemRank, availableLabels, projectId, allColumns, projectById, collapsedSubtaskItemIds, aggregate, dropPreview, isItemCompleted, onAction, onOpenTask, onToggleItemComplete, onDeleteItem, onCreateTask, mobile = false }: ColumnProps) {
   const { direction, t } = useI18n();
   const {
     attributes,
@@ -260,6 +275,7 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
   });
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState('');
+  const [labels, setLabels] = useState<string[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<ColumnMenuPosition | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -267,7 +283,7 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
   const [editingLimit, setEditingLimit] = useState(false);
   const [limitValue, setLimitValue] = useState('');
   const [limitError, setLimitError] = useState(false);
-  const composerRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuPopoverRef = useRef<HTMLDivElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
@@ -275,6 +291,8 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
   useEffect(() => {
     if (!aggregate) return;
     setAdding(false);
+    setTitle('');
+    setLabels([]);
     setMenuOpen(false);
     setRenaming(false);
   }, [aggregate]);
@@ -332,19 +350,26 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
     if (!clean) return;
     onAction({
       type: 'addItem',
-      item: createWorkItem(projectId, column.id, clean, (items.length + 1) * 1000),
+      item: createWorkItem(projectId, column.id, clean, firstItemRank === undefined ? 1000 : firstItemRank - 1000, { labels }),
     });
     setTitle('');
+    setLabels([]);
     setAdding(false);
   };
 
   const requestTask = () => {
     if (mobile && onCreateTask) {
-      onCreateTask({ columnId: column.id });
+      onCreateTask({ columnId: column.id, insertAt: 'top' });
       return;
     }
     setAdding(true);
     window.setTimeout(() => composerRef.current?.focus(), 0);
+  };
+
+  const closeComposer = () => {
+    setTitle('');
+    setLabels([]);
+    setAdding(false);
   };
 
   const renameColumn = () => {
@@ -374,6 +399,11 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
       return;
     }
     onAction({ type: 'updateColumn', projectId, columnId: column.id, changes: { limit: nextLimit } });
+    setMenuOpen(false);
+  };
+
+  const disableLimit = () => {
+    onAction({ type: 'updateColumn', projectId, columnId: column.id, changes: { limit: undefined } });
     setMenuOpen(false);
   };
 
@@ -483,6 +513,12 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
                         />
                       </label>
                       {limitError && <p role="alert">{t('Enter a whole number of at least 1.')}</p>}
+                      {column.limit !== undefined && (
+                        <button type="button" className="wip-limit-disable" onClick={disableLimit}>
+                          <X size={16} />
+                          {t('Disable WIP limit')}
+                        </button>
+                      )}
                       <div className="wip-limit-actions">
                         <button type="button" onClick={() => setEditingLimit(false)}>{t('Cancel')}</button>
                         <button type="submit" className="button-primary">{t('Save changes')}</button>
@@ -534,6 +570,38 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
         )}
       </header>
 
+      {!aggregate && adding && (
+        <div className="quick-add slide-up">
+          <textarea
+            ref={composerRef}
+            value={title}
+            dir="auto"
+            rows={1}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              resizeQuickAddField(event.currentTarget);
+            }}
+            placeholder={t('What needs to be done?')}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                addTask();
+              }
+              if (event.key === 'Escape') closeComposer();
+            }}
+            autoFocus
+          />
+          <div className="quick-add-label-field">
+            <span className="quick-add-label-heading"><Tag size={14} /> {t('Labels')}</span>
+            <LabelPicker value={labels} options={availableLabels} onChange={setLabels} className="quick-add-label-picker" />
+          </div>
+          <div className="quick-add-actions">
+            <button type="button" onClick={closeComposer} aria-label={t('Cancel')}><X size={16} /></button>
+            <button type="button" className="quick-add-submit" onClick={addTask}>{t('Add task')}</button>
+          </div>
+        </div>
+      )}
+
       <SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
         <div className="task-list">
           {items.map((item) => (
@@ -544,6 +612,7 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
                   columnId={dropPreview.columnId}
                   index={dropPreview.index}
                   subtasksCollapsed={collapsedSubtaskItemIds.has(dropPreview.item.id)}
+                  completed={isItemCompleted(dropPreview.item)}
                   onAction={onAction}
                   onOpenTask={onOpenTask}
                 />
@@ -553,7 +622,10 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
                 project={aggregate ? projectById.get(item.projectId) : undefined}
                 dragDisabled={aggregate}
                 subtasksCollapsed={collapsedSubtaskItemIds.has(item.id)}
+                completed={isItemCompleted(item)}
                 onOpen={onOpenTask}
+                onToggleComplete={onToggleItemComplete}
+                onDelete={onDeleteItem}
                 onUpdateSubtasks={(itemId, subtasks) => onAction({
                   type: 'updateItem',
                   itemId,
@@ -573,6 +645,7 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
               columnId={dropPreview.columnId}
               index={dropPreview.index}
               subtasksCollapsed={collapsedSubtaskItemIds.has(dropPreview.item.id)}
+              completed={isItemCompleted(dropPreview.item)}
               onAction={onAction}
               onOpenTask={onOpenTask}
             />
@@ -592,24 +665,9 @@ function BoardColumn({ column, items, projectId, allColumns, projectById, collap
         </div>
       </SortableContext>
 
-      {!aggregate && (adding ? (
-        <div className="quick-add slide-up">
-          <input
-            ref={composerRef}
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder={t('What needs to be done?')}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') addTask();
-              if (event.key === 'Escape') setAdding(false);
-            }}
-            autoFocus
-          />
-          <div><span>{t('Press Enter to add')}</span><button onClick={() => setAdding(false)}><X size={14} /></button><button className="quick-add-submit" onClick={addTask}>{t('Add task')}</button></div>
-        </div>
-      ) : (
+      {!aggregate && !adding && (
         <button className="add-task-button" onClick={requestTask}><Plus size={15} /> {t('Add task')}</button>
-      ))}
+      )}
     </section>
   );
 }
@@ -620,19 +678,20 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
   const [search, setSearch] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [priorities, setPriorities] = useState<Priority[]>([]);
+  const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
+  const [labelSearch, setLabelSearch] = useState('');
   const [addingColumn, setAddingColumn] = useState(false);
   const [columnName, setColumnName] = useState('');
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
   const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null);
   const [taskDropPreview, setTaskDropPreview] = useState<TaskDropPreviewState | null>(null);
-  const [scope, setScope] = useState<ProjectScope>('current');
+  const scope = document.preferences.projectScope ?? 'current';
+  const setScope = (nextScope: ProjectScope) => onAction({ type: 'setProjectScope', scope: nextScope });
   const [mobileBoardOrientation, setMobileBoardOrientation] = useState<'stacked' | 'horizontal'>('stacked');
   const filterRef = useRef<HTMLDivElement>(null);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
   const addColumnRef = useRef<HTMLDivElement>(null);
   const addColumnTriggerRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => setScope('current'), [project.id]);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -693,6 +752,15 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
     [document.preferences.collapsedKanbanSubtaskItemIds],
   );
   const projectOrder = useMemo(() => new Map(scopedProjects.map((candidate, index) => [candidate.id, index])), [scopedProjects]);
+  const scopedItems = useMemo(
+    () => Object.values(document.items).filter((item) => scopedProjectIds.has(item.projectId)),
+    [document.items, scopedProjectIds],
+  );
+  const availableLabels = useMemo(() => labelUsageForItems(scopedItems), [scopedItems]);
+  const availableLabelKeys = useMemo(
+    () => new Set(availableLabels.map(({ label }) => label.trim().toLocaleLowerCase())),
+    [availableLabels],
+  );
   const columns = useMemo(() => {
     const seen = new Set<string>();
     return scopedProjects.flatMap((candidate) => document.modules.kanban.projects[candidate.id]?.columns ?? [])
@@ -702,15 +770,24 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
         return true;
       });
   }, [document.modules.kanban.projects, scopedProjects]);
-  const normalizedSearch = search.trim().toLocaleLowerCase();
-  const visibleItems = useMemo(() => {
-    return Object.values(document.items).filter((item) => {
-      if (!scopedProjectIds.has(item.projectId)) return false;
-      if (priorities.length > 0 && !priorities.includes(item.priority)) return false;
-      if (!normalizedSearch) return true;
-      return [item.title, item.description, ...item.labels].join(' ').toLocaleLowerCase().includes(normalizedSearch);
+  useEffect(() => {
+    setSelectedLabels((current) => {
+      const next = current.filter((label) => availableLabelKeys.has(label.trim().toLocaleLowerCase()));
+      return next.length === current.length ? current : next;
     });
-  }, [document.items, normalizedSearch, priorities, scopedProjectIds]);
+  }, [availableLabelKeys]);
+
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const selectedLabelKeys = useMemo(() => new Set(selectedLabels.map((label) => label.trim().toLocaleLowerCase())), [selectedLabels]);
+  const visibleItems = useMemo(() => scopedItems.filter((item) => {
+    if (priorities.length > 0 && !priorities.includes(item.priority)) return false;
+    if (selectedLabelKeys.size > 0 && !item.labels.some((label) => selectedLabelKeys.has(label.trim().toLocaleLowerCase()))) return false;
+    if (!normalizedSearch) return true;
+    return [item.title, item.description, ...item.labels].join(' ').toLocaleLowerCase().includes(normalizedSearch);
+  }), [normalizedSearch, priorities, scopedItems, selectedLabelKeys]);
+  const normalizedLabelSearch = labelSearch.trim().toLocaleLowerCase();
+  const visibleLabelOptions = availableLabels.filter(({ label }) => label.toLocaleLowerCase().includes(normalizedLabelSearch));
+  const activeFilterCount = priorities.length + selectedLabels.length;
 
   const filteredColumnItems = (columnId: string) => visibleItems
     .filter((item) => item.moduleData.kanban.columnId === columnId)
@@ -807,6 +884,14 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
     onAction({ type: 'moveItem', itemId: item.id, columnId, index: taskDropIndex(event, item.id, targetItems) });
   };
 
+  const toggleItemComplete = (item: WorkItem) => {
+    const destination = completionToggleColumn(document, item);
+    if (!destination) return;
+    onAction({ type: 'moveItem', itemId: item.id, columnId: destination.id, index: Number.MAX_SAFE_INTEGER });
+  };
+
+  const deleteItem = (item: WorkItem) => onAction({ type: 'deleteItem', itemId: item.id });
+
   const addColumn = () => {
     const title = columnName.trim();
     if (!title) return;
@@ -877,8 +962,8 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
         </div>
         <ProjectScopeSelect project={project} value={scope} onChange={setScope} />
         <div ref={filterRef} className="relative">
-          <button ref={filterTriggerRef} className={`toolbar-button ${priorities.length ? 'active' : ''}`} aria-haspopup="menu" aria-expanded={filterOpen} onClick={() => setFilterOpen((open) => !open)}>
-            <Filter size={15} /> {t('Filter')} {priorities.length > 0 && <span>{priorities.length}</span>} <ChevronDown size={13} />
+          <button ref={filterTriggerRef} className={`toolbar-button ${activeFilterCount ? 'active' : ''}`} aria-haspopup="menu" aria-expanded={filterOpen} onClick={() => setFilterOpen((open) => !open)}>
+            <Filter size={15} /> {t('Filter')} {activeFilterCount > 0 && <span>{activeFilterCount}</span>} <ChevronDown size={13} />
           </button>
           {filterOpen && (
             <div className="popover filter-menu scale-in" role="menu">
@@ -890,7 +975,43 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
                   <b className={priorities.includes(priority) ? 'checked' : ''}>{priorities.includes(priority) && <Check size={12} />}</b>
                 </button>
               ))}
-              {priorities.length > 0 && <button className="clear-filter" onClick={() => setPriorities([])}>{t('Clear filters')}</button>}
+              <p>{t('Show labels')}</p>
+              {availableLabels.length > 0 ? (
+                <>
+                  <label className="filter-label-search">
+                    <Search size={14} />
+                    <input
+                      value={labelSearch}
+                      onChange={(event) => setLabelSearch(event.target.value)}
+                      placeholder={t('Search labels')}
+                      aria-label={t('Search labels')}
+                    />
+                    {labelSearch && <button type="button" onClick={() => setLabelSearch('')} aria-label={t('Clear label search')}><X size={13} /></button>}
+                  </label>
+                  <div className="filter-label-options">
+                    {visibleLabelOptions.map(({ label, count }) => {
+                      const selected = selectedLabels.some((value) => value.trim().toLocaleLowerCase() === label.trim().toLocaleLowerCase());
+                      return (
+                        <button
+                          type="button"
+                          className="filter-label-option"
+                          key={label}
+                          onClick={() => setSelectedLabels((current) => selected
+                            ? current.filter((value) => value.trim().toLocaleLowerCase() !== label.trim().toLocaleLowerCase())
+                            : [...current, label])}
+                        >
+                          <Tag size={14} />
+                          <span dir="auto">{label}</span>
+                          <small>{count}</small>
+                          <b className={selected ? 'checked' : ''}>{selected && <Check size={12} />}</b>
+                        </button>
+                      );
+                    })}
+                    {visibleLabelOptions.length === 0 && <span className="filter-label-empty">{t('No labels match your search')}</span>}
+                  </div>
+                </>
+              ) : <span className="filter-label-empty">{t('No labels in this scope')}</span>}
+              {activeFilterCount > 0 && <button className="clear-filter" onClick={() => { setPriorities([]); setSelectedLabels([]); }}>{t('Clear filters')}</button>}
             </div>
           )}
         </div>
@@ -924,7 +1045,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
             )}
           </div>
         )}
-        {(search || priorities.length > 0) && <span className="result-count">{t(visibleItems.length === 1 ? '{{count}} matching task' : '{{count}} matching tasks', { count: visibleItems.length })}</span>}
+        {(search || activeFilterCount > 0) && <span className="result-count">{t(visibleItems.length === 1 ? '{{count}} matching task' : '{{count}} matching tasks', { count: visibleItems.length })}</span>}
       </div>
 
       <DndContext
@@ -950,6 +1071,8 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
                   key={column.id}
                   column={column}
                   items={filteredColumnItems(column.id)}
+                  firstItemRank={itemsForColumn(document, project.id, column.id)[0]?.moduleData.kanban.rank}
+                  availableLabels={availableLabels}
                   projectId={project.id}
                   allColumns={columns}
                   projectById={projectById}
@@ -958,9 +1081,12 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
                   dropPreview={taskDropPreview?.columnId === column.id && draggingItem
                     ? { ...taskDropPreview, item: draggingItem }
                     : undefined}
+                  isItemCompleted={(item) => isTaskCompleted(document, item)}
                   mobile={compactLayout}
                   onAction={onAction}
                   onOpenTask={onOpenTask}
+                  onToggleItemComplete={toggleItemComplete}
+                  onDeleteItem={deleteItem}
                   onCreateTask={onCreateTask}
                 />
               ))}
@@ -993,7 +1119,7 @@ export function KanbanBoard({ document, project, saveState, dirty, onAction, onO
         <button
           type="button"
           className="mobile-board-fab"
-          onClick={() => onCreateTask({ columnId: columnForRule(activeColumns, 'new-task')?.id })}
+          onClick={() => onCreateTask({ columnId: columnForRule(activeColumns, 'new-task')?.id, insertAt: 'top' })}
         ><Plus size={20} /> {t('New task')}</button>
       )}
     </main>

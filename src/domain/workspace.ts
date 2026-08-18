@@ -14,6 +14,7 @@ import type {
   Priority,
   Project,
   RoadmapHorizon,
+  TimelineZoom,
   WorkItem,
   WorkspaceAction,
   WorkspaceDocument,
@@ -23,10 +24,24 @@ export const PROJECT_COLORS = ['#6c5ce7', '#1f9d78', '#e58b4a', '#4c84e8', '#d45
 
 export const KANBAN_COLUMN_RULES: KanbanColumnRule[] = ['new-task', 'completed'];
 
+export const TIMELINE_ZOOMS: TimelineZoom[] = ['week', 'month', 'two-weeks', 'four-weeks', 'year'];
+
+function isIsoCalendarDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return false;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` === value;
+}
+
+function normalizeTimelineWindowStarts(value: WorkspaceDocument['preferences']['timelineWindowStarts'] | undefined): Partial<Record<TimelineZoom, string>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(TIMELINE_ZOOMS.flatMap((zoom) => isIsoCalendarDate(value[zoom]) ? [[zoom, value[zoom]]] : []));
+}
+
 export const DEFAULT_COLUMNS: KanbanColumn[] = [
-  { id: 'backlog', title: 'Backlog', color: '#a4a9b4', rules: [] },
-  { id: 'planned', title: 'Planned', color: '#7c6ee6', limit: 5, rules: ['new-task'] },
-  { id: 'progress', title: 'In progress', color: '#e6a44b', limit: 4, rules: [] },
+  { id: 'backlog', title: 'Backlog', color: '#a4a9b4', rules: ['new-task'] },
+  { id: 'planned', title: 'Stuck', color: '#7c6ee6', rules: [] },
+  { id: 'progress', title: 'In progress', color: '#e6a44b', rules: [] },
   { id: 'done', title: 'Done', color: '#43a882', rules: ['completed'] },
 ];
 
@@ -37,6 +52,22 @@ export function columnForRule(columns: KanbanColumn[], rule: KanbanColumnRule): 
   return columns.find((column) => column.id === 'done')
     ?? columns.find((column) => /done|complete/i.test(column.title))
     ?? columns.at(-1);
+}
+
+export function isTaskCompleted(document: WorkspaceDocument, item: WorkItem): boolean {
+  const columns = document.modules.kanban.projects[item.projectId]?.columns ?? [];
+  return columnForRule(columns, 'completed')?.id === item.moduleData.kanban.columnId;
+}
+
+export function completionToggleColumn(document: WorkspaceDocument, item: WorkItem): KanbanColumn | undefined {
+  const columns = document.modules.kanban.projects[item.projectId]?.columns ?? [];
+  const completedColumn = columnForRule(columns, 'completed');
+  if (!completedColumn) return undefined;
+  if (item.moduleData.kanban.columnId !== completedColumn.id) return completedColumn;
+  const newTaskColumn = columnForRule(columns, 'new-task');
+  return newTaskColumn?.id !== completedColumn.id
+    ? newTaskColumn
+    : columns.find((column) => column.id !== completedColumn.id);
 }
 
 function normalizeKanbanColumns(columns: KanbanColumn[]): KanbanColumn[] {
@@ -243,7 +274,7 @@ export function createEmptyWorkspace(
       },
     },
     resources: { attachments: {} },
-    preferences: { activeProjectId: project.id, roadmapHorizonOrder: [...ROADMAP_HORIZONS], timelineLayout: 'tasks', collapsedKanbanSubtaskItemIds: [] },
+    preferences: { activeProjectId: project.id, roadmapHorizonOrder: [...ROADMAP_HORIZONS], projectScope: 'current', timelineLayout: 'tasks', collapsedKanbanSubtaskItemIds: [] },
   };
 }
 
@@ -354,7 +385,7 @@ export function createDefaultWorkspace(workspaceName = 'My workspace'): Workspac
       },
     },
     resources: { attachments: {} },
-    preferences: { activeProjectId: product.id, roadmapHorizonOrder: [...ROADMAP_HORIZONS], timelineLayout: 'tasks', collapsedKanbanSubtaskItemIds: [] },
+    preferences: { activeProjectId: product.id, roadmapHorizonOrder: [...ROADMAP_HORIZONS], projectScope: 'current', timelineLayout: 'tasks', collapsedKanbanSubtaskItemIds: [] },
   };
 }
 
@@ -504,7 +535,17 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
       Array.isArray(candidate.preferences.roadmapHorizonOrder) &&
       candidate.preferences.roadmapHorizonOrder.every((horizon) => ROADMAP_HORIZONS.includes(horizon))
     )) &&
+    (candidate.preferences.projectScope === undefined || candidate.preferences.projectScope === 'current' || candidate.preferences.projectScope === 'all') &&
     (candidate.preferences.timelineLayout === undefined || candidate.preferences.timelineLayout === 'tasks' || candidate.preferences.timelineLayout === 'compact') &&
+    (candidate.preferences.timelineZoom === undefined || TIMELINE_ZOOMS.includes(candidate.preferences.timelineZoom)) &&
+    (candidate.preferences.timelineWindowStarts === undefined || (
+      Boolean(candidate.preferences.timelineWindowStarts) &&
+      typeof candidate.preferences.timelineWindowStarts === 'object' &&
+      !Array.isArray(candidate.preferences.timelineWindowStarts) &&
+      Object.entries(candidate.preferences.timelineWindowStarts).every(([zoom, startDate]) =>
+        TIMELINE_ZOOMS.includes(zoom as TimelineZoom) && isIsoCalendarDate(startDate)
+      )
+    )) &&
     (candidate.preferences.collapsedKanbanSubtaskItemIds === undefined || (
       Array.isArray(candidate.preferences.collapsedKanbanSubtaskItemIds) &&
       candidate.preferences.collapsedKanbanSubtaskItemIds.every((itemId) => typeof itemId === 'string')
@@ -540,6 +581,121 @@ function normalizeStoredCanvasView(
   };
 }
 
+type StoredParentLinkedItem = WorkItem & { parentId?: unknown; hierarchyRank?: unknown };
+
+function collapseStoredParentLinks(
+  document: WorkspaceDocument,
+  kanbanProjects: Record<string, KanbanProjectSettings>,
+): { items: Record<string, WorkItem>; collapsedToRoot: Map<string, string> } {
+  const storedItems = Object.fromEntries(Object.entries(document.items).map(([itemId, item]) => [
+    itemId,
+    { ...item, dependencyIds: item.dependencyIds ?? [], attachmentIds: item.attachmentIds ?? [], links: item.links ?? [], subtasks: item.subtasks ?? [] } as StoredParentLinkedItem,
+  ]));
+  const cleanItem = (item: StoredParentLinkedItem): WorkItem => {
+    const clean = { ...item };
+    delete clean.parentId;
+    delete clean.hierarchyRank;
+    return clean;
+  };
+  const parentByChild = new Map<string, string>();
+  const childrenByParent = new Map<string, StoredParentLinkedItem[]>();
+  Object.values(storedItems).forEach((item) => {
+    const parentId = typeof item.parentId === 'string' ? item.parentId : undefined;
+    const parent = parentId ? storedItems[parentId] : undefined;
+    if (!parent || parent.id === item.id || parent.projectId !== item.projectId) return;
+    parentByChild.set(item.id, parent.id);
+    childrenByParent.set(parent.id, [...(childrenByParent.get(parent.id) ?? []), item]);
+  });
+  childrenByParent.forEach((children) => children.sort((left, right) => {
+    const leftRank = Number.isFinite(left.hierarchyRank) ? Number(left.hierarchyRank) : left.moduleData.kanban.rank;
+    const rightRank = Number.isFinite(right.hierarchyRank) ? Number(right.hierarchyRank) : right.moduleData.kanban.rank;
+    return leftRank - rightRank || left.moduleData.kanban.rank - right.moduleData.kanban.rank || left.createdAt.localeCompare(right.createdAt);
+  }));
+
+  const items = Object.fromEntries(Object.entries(storedItems).map(([itemId, item]) => [itemId, cleanItem(item)]));
+  const collapsedToRoot = new Map<string, string>();
+  const visited = new Set<string>();
+  Object.values(storedItems).filter((item) => !parentByChild.has(item.id)).forEach((root) => {
+    const descendants: StoredParentLinkedItem[] = [];
+    const visit = (parentId: string) => {
+      (childrenByParent.get(parentId) ?? []).forEach((child) => {
+        if (visited.has(child.id)) return;
+        visited.add(child.id);
+        descendants.push(child);
+        visit(child.id);
+      });
+    };
+    visit(root.id);
+    if (descendants.length === 0) return;
+
+    const branchIds = new Set(descendants.map((item) => item.id));
+    const rootItem = items[root.id];
+    const subtasks = [...rootItem.subtasks];
+    const subtaskIds = new Set(subtasks.map((subtask) => subtask.id));
+    descendants.forEach((child) => {
+      collapsedToRoot.set(child.id, root.id);
+      if (!subtaskIds.has(child.id)) {
+        const columns = kanbanProjects[child.projectId]?.columns ?? [];
+        subtasks.push({
+          id: child.id,
+          title: child.title,
+          completed: columnForRule(columns, 'completed')?.id === child.moduleData.kanban.columnId,
+        });
+        subtaskIds.add(child.id);
+      }
+      child.subtasks.forEach((subtask) => {
+        if (subtaskIds.has(subtask.id)) return;
+        subtasks.push(subtask);
+        subtaskIds.add(subtask.id);
+      });
+      delete items[child.id];
+    });
+    const branch = [root, ...descendants];
+    const attachmentIds = Array.from(new Set(branch.flatMap((item) => item.attachmentIds ?? [])));
+    const links = Array.from(new Map(branch.flatMap((item) => item.links ?? []).map((link) => [link.id, link])).values());
+    const dependencyIds = Array.from(new Set(branch.flatMap((item) => item.dependencyIds ?? [])))
+      .filter((dependencyId) => !branchIds.has(dependencyId) && dependencyId !== root.id);
+    items[root.id] = { ...rootItem, subtasks, attachmentIds, links, dependencyIds };
+  });
+
+  Object.entries(items).forEach(([itemId, item]) => {
+    const dependencyIds = Array.from(new Set((item.dependencyIds ?? []).map((dependencyId) => collapsedToRoot.get(dependencyId) ?? dependencyId)))
+      .filter((dependencyId) => dependencyId !== itemId && Boolean(items[dependencyId]));
+    items[itemId] = { ...item, dependencyIds };
+  });
+  return { items, collapsedToRoot };
+}
+
+function normalizeLabelsAcrossItems(items: Record<string, WorkItem>): Record<string, WorkItem> {
+  const canonicalLabels = new Map<string, string>();
+  return Object.fromEntries(Object.entries(items).map(([itemId, item]) => {
+    const labels: string[] = [];
+    const labelsOnTask = new Set<string>();
+    item.labels.forEach((rawLabel) => {
+      const label = rawLabel.trim();
+      const key = label.toLocaleLowerCase();
+      if (!label || labelsOnTask.has(key)) return;
+      labelsOnTask.add(key);
+      if (!canonicalLabels.has(key)) canonicalLabels.set(key, label);
+      labels.push(canonicalLabels.get(key)!);
+    });
+    return [itemId, { ...item, labels }];
+  }));
+}
+
+function redirectCollapsedCanvasTasks(canvasProject: CanvasProject, collapsedToRoot: ReadonlyMap<string, string>): CanvasProject {
+  if (collapsedToRoot.size === 0) return canvasProject;
+  const redirectNodes = (nodes: Record<string, CanvasNode>) => Object.fromEntries(Object.entries(nodes).map(([nodeId, node]) => [
+    nodeId,
+    node.taskId && collapsedToRoot.has(node.taskId) ? { ...node, taskId: collapsedToRoot.get(node.taskId) } : node,
+  ]));
+  return {
+    ...canvasProject,
+    nodes: redirectNodes(canvasProject.nodes),
+    views: Object.fromEntries(Object.entries(canvasProject.views).map(([viewId, view]) => [viewId, { ...view, nodes: redirectNodes(view.nodes) }])),
+  };
+}
+
 export function normalizeWorkspaceDocument(document: WorkspaceDocument): WorkspaceDocument {
   const storedCanvas = document.modules.canvas as WorkspaceDocument['modules']['canvas'] | undefined;
   const kanbanProjects = Object.fromEntries(Object.entries(document.modules.kanban.projects).map(([projectId, settings]) => [
@@ -566,27 +722,41 @@ export function normalizeWorkspaceDocument(document: WorkspaceDocument): Workspa
       views,
     } satisfies CanvasProject];
   }));
+  const { items: collapsedItems, collapsedToRoot } = collapseStoredParentLinks(document, kanbanProjects);
+  const items = normalizeLabelsAcrossItems(collapsedItems);
+  const redirectedCanvasProjects = Object.fromEntries(Object.entries(canvasProjects).map(([projectId, canvasProject]) => [
+    projectId,
+    redirectCollapsedCanvasTasks(canvasProject, collapsedToRoot),
+  ]));
+  const timelineWindowStarts = normalizeTimelineWindowStarts(document.preferences.timelineWindowStarts);
+  const {
+    timelineWindowStarts: _storedTimelineWindowStarts,
+    timelineZoom: _storedTimelineZoom,
+    ...storedPreferences
+  } = document.preferences;
   return {
     ...document,
-    items: Object.fromEntries(Object.entries(document.items).map(([itemId, item]) => [
-      itemId,
-      { ...item, dependencyIds: item.dependencyIds ?? [], attachmentIds: item.attachmentIds ?? [], links: item.links ?? [] },
-    ])),
+    items,
     modules: {
       ...document.modules,
       kanban: { ...document.modules.kanban, projects: kanbanProjects },
-      canvas: { version: 1, projects: canvasProjects },
+      canvas: { version: 1, projects: redirectedCanvasProjects },
     },
     resources: {
       ...(document.resources ?? {}),
       attachments: document.resources?.attachments ?? {},
     },
     preferences: {
-      ...document.preferences,
+      ...storedPreferences,
       roadmapHorizonOrder: normalizeRoadmapHorizonOrder(document.preferences.roadmapHorizonOrder),
+      projectScope: document.preferences.projectScope === 'all' ? 'all' : 'current',
       timelineLayout: document.preferences.timelineLayout === 'compact' ? 'compact' : 'tasks',
+      ...(document.preferences.timelineZoom && TIMELINE_ZOOMS.includes(document.preferences.timelineZoom)
+        ? { timelineZoom: document.preferences.timelineZoom }
+        : {}),
+      ...(Object.keys(timelineWindowStarts).length > 0 ? { timelineWindowStarts } : {}),
       collapsedKanbanSubtaskItemIds: Array.from(new Set(
-        (document.preferences.collapsedKanbanSubtaskItemIds ?? []).filter((itemId) => Boolean(document.items[itemId])),
+        (document.preferences.collapsedKanbanSubtaskItemIds ?? []).filter((itemId) => Boolean(items[itemId])),
       )),
     },
   };
@@ -680,11 +850,42 @@ export function workspaceReducer(
     return { ...document, preferences: { ...document.preferences, activeProjectId: action.projectId } };
   }
 
+  if (action.type === 'setProjectScope') {
+    if (document.preferences.projectScope === action.scope) return document;
+    return touch({
+      ...document,
+      preferences: { ...document.preferences, projectScope: action.scope },
+    });
+  }
+
   if (action.type === 'setTimelineLayout') {
     if (document.preferences.timelineLayout === action.layout) return document;
     return touch({
       ...document,
       preferences: { ...document.preferences, timelineLayout: action.layout },
+    });
+  }
+
+  if (action.type === 'setTimelineZoom') {
+    if (!TIMELINE_ZOOMS.includes(action.zoom) || document.preferences.timelineZoom === action.zoom) return document;
+    return touch({
+      ...document,
+      preferences: { ...document.preferences, timelineZoom: action.zoom },
+    });
+  }
+
+  if (action.type === 'setTimelineWindowStart') {
+    if (!TIMELINE_ZOOMS.includes(action.zoom) || !isIsoCalendarDate(action.startDate)) return document;
+    if (document.preferences.timelineWindowStarts?.[action.zoom] === action.startDate) return document;
+    return touch({
+      ...document,
+      preferences: {
+        ...document.preferences,
+        timelineWindowStarts: {
+          ...document.preferences.timelineWindowStarts,
+          [action.zoom]: action.startDate,
+        },
+      },
     });
   }
 
@@ -1220,6 +1421,24 @@ export function itemsForColumn(
       (item) => item.projectId === projectId && item.moduleData.kanban.columnId === columnId,
     )
     .sort((a, b) => a.moduleData.kanban.rank - b.moduleData.kanban.rank);
+}
+
+export type LabelUsage = { label: string; count: number };
+
+export function labelUsageForItems(items: ReadonlyArray<WorkItem>): LabelUsage[] {
+  const usages = new Map<string, LabelUsage>();
+  items.forEach((item) => {
+    const labelsOnTask = new Set<string>();
+    item.labels.forEach((rawLabel) => {
+      const label = rawLabel.trim();
+      const key = label.toLocaleLowerCase();
+      if (!label || labelsOnTask.has(key)) return;
+      labelsOnTask.add(key);
+      const existing = usages.get(key);
+      usages.set(key, existing ? { ...existing, count: existing.count + 1 } : { label, count: 1 });
+    });
+  });
+  return Array.from(usages.values()).sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }));
 }
 
 export const PRIORITY_META: Record<Priority, { label: string; color: string }> = {

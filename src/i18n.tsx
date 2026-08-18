@@ -121,6 +121,7 @@ export const HEBREW_TRANSLATIONS: Readonly<Record<string, string>> = {
   'Make space for meaningful work.': 'מפנים מקום לעבודה משמעותית.',
   'A calm, focused home for your projects—designed to help ideas move forward.': 'בית רגוע וממוקד לפרויקטים שלכם—כדי לעזור לרעיונות להתקדם.',
   'Planned': 'מתוכנן',
+  'Stuck': 'תקוע',
   'In progress': 'בתהליך',
   'Backlog': 'משימות עתידיות',
   'Done': 'הושלם',
@@ -430,6 +431,7 @@ export const HEBREW_TRANSLATIONS: Readonly<Record<string, string>> = {
   'Rename column': 'שינוי שם העמודה',
   'Work-in-progress limit (leave empty for none)': 'מגבלת עבודה בתהליך (השאירו ריק ללא מגבלה)',
   'Set WIP limit': 'הגדרת מגבלת עבודה בתהליך',
+  'Disable WIP limit': 'השבתת מגבלת עבודה בתהליך',
   'Enter a whole number of at least 1.': 'הזינו מספר שלם של 1 לפחות.',
   'Column behavior': 'התנהגות העמודה',
   'Tell Kanbanos what this column means. Each behavior can be assigned to one column.': 'הגדירו ל־Kanbanos מה משמעות העמודה. ניתן לשייך כל התנהגות לעמודה אחת.',
@@ -468,6 +470,11 @@ export const HEBREW_TRANSLATIONS: Readonly<Record<string, string>> = {
   'No missions in this column': 'אין משימות בעמודה הזו',
   'Filter': 'סינון',
   'Show priority': 'הצגת עדיפות',
+  'Show labels': 'הצגת תגיות',
+  'Search labels': 'חיפוש תגיות',
+  'Clear label search': 'ניקוי חיפוש התגיות',
+  'No labels match your search': 'אין תגיות התואמות לחיפוש',
+  'No labels in this scope': 'אין תגיות בטווח הזה',
   'Clear filters': 'ניקוי מסננים',
   '{{count}} matching task': 'משימה תואמת אחת',
   '{{count}} matching tasks': '{{count}} משימות תואמות',
@@ -547,6 +554,8 @@ export const HEBREW_TRANSLATIONS: Readonly<Record<string, string>> = {
   'Open {{name}}': 'פתיחת {{name}}',
   'Remove {{name}}': 'הסרת {{name}}',
   'Subtasks': 'תת־משימות',
+  'Mark {{name}} as complete': 'סימון {{name}} כהושלמה',
+  'Mark {{name}} as not complete': 'סימון {{name}} כלא הושלמה',
   '{{completed}} of {{total}}': '{{completed}} מתוך {{total}}',
   'Drag to reorder': 'גררו לשינוי הסדר',
   'Reorder {{name}}': 'שינוי הסדר של {{name}}',
@@ -569,8 +578,17 @@ export const HEBREW_TRANSLATIONS: Readonly<Record<string, string>> = {
   'Initials': 'ראשי תיבות',
   'Labels': 'תגיות',
   'Add label…': 'הוספת תגית…',
+  'Search or create labels': 'חיפוש או יצירת תגיות',
+  'Search or create a label…': 'חיפוש או יצירת תגית…',
+  'Existing labels': 'תגיות קיימות',
+  'Selected labels': 'תגיות שנבחרו',
+  'Remove label {{name}}': 'הסרת התגית {{name}}',
+  'Create “{{name}}”': 'יצירת „{{name}}”',
+  'No existing labels yet': 'עדיין אין תגיות קיימות',
+  'All existing labels are selected': 'כל התגיות הקיימות נבחרו',
   'Created {{date}}': 'נוצרה ב־{{date}}',
   'Delete this task? This cannot be undone after the workspace is saved.': 'למחוק את המשימה? לא ניתן יהיה לבטל זאת לאחר שמירת סביבת העבודה.',
+  'Delete {{name}}': 'מחיקת {{name}}',
   'Delete': 'מחיקה',
   'Saved automatically': 'נשמר אוטומטית',
   'Done editing': 'סיום העריכה',
@@ -582,7 +600,7 @@ export const HEBREW_TRANSLATIONS: Readonly<Record<string, string>> = {
   'What needs to happen?': 'מה צריך לקרות?',
   'Write a specific, useful next step…': 'כתבו צעד הבא ממוקד ושימושי…',
   'Start': 'התחלה',
-  'You can add details, labels, subtasks, and an owner right after creating it.': 'מיד לאחר היצירה תוכלו להוסיף פרטים, תגיות, תת־משימות ואחראי.',
+  'Choose labels now; details, subtasks, and an owner can be added after creating it.': 'בחרו תגיות עכשיו; לאחר היצירה תוכלו להוסיף פרטים, תת־משימות ואחראי.',
   'to create': 'ליצירה',
   'Cancel': 'ביטול',
   'Create task button': 'יצירת משימה',
@@ -814,6 +832,15 @@ function interpolate(value: string, variables?: Variables): string {
   return value.replace(/{{(\w+)}}/g, (_, name: string) => String(variables[name] ?? `{{${name}}}`));
 }
 
+function enableAutomaticInputDirection(root: ParentNode): void {
+  const candidates = root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input:not([dir]), textarea:not([dir])');
+  candidates.forEach((element) => {
+    if (element instanceof HTMLTextAreaElement || ['text', 'search', 'email', 'tel'].includes(element.type)) {
+      element.dir = 'auto';
+    }
+  });
+}
+
 const TranslationContext = createContext<TranslationContextValue | null>(null);
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
@@ -828,6 +855,20 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     root.dir = direction;
     localStorage.setItem(STORAGE_LANGUAGE, language);
   }, [direction, language]);
+
+  useLayoutEffect(() => {
+    enableAutomaticInputDirection(document);
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => mutation.addedNodes.forEach((node) => {
+        if (node instanceof Element) {
+          if (node.matches('input:not([dir]), textarea:not([dir])')) enableAutomaticInputDirection(node.parentNode ?? document);
+          else enableAutomaticInputDirection(node);
+        }
+      }));
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
 
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;

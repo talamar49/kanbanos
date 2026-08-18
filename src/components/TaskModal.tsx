@@ -43,8 +43,9 @@ import {
   X,
 } from 'lucide-react';
 import type { KanbanColumn, Priority, Subtask, TaskLink, WorkItem, WorkspaceAction, WorkspaceAttachment } from '../domain/types';
-import { PRIORITY_META } from '../domain/workspace';
+import { labelUsageForItems, PRIORITY_META, type LabelUsage } from '../domain/workspace';
 import { useI18n } from '../i18n';
+import { LabelPicker } from './LabelPicker';
 
 type EditingResource = {
   type: 'attachment' | 'link';
@@ -57,6 +58,7 @@ type Props = {
   item: WorkItem;
   columns: KanbanColumn[];
   projectTasks: WorkItem[];
+  availableLabels?: LabelUsage[];
   attachments: WorkspaceAttachment[];
   onAction: (action: WorkspaceAction) => void;
   onAddAttachments: (kind: 'files' | 'folders' | 'references') => Promise<WorkspaceAttachment[]>;
@@ -130,7 +132,7 @@ function SortableModalSubtask({ subtask, onToggle, onDelete }: { subtask: Subtas
   );
 }
 
-export function TaskModal({ item, columns, projectTasks, attachments, onAction, onAddAttachments, onPreviewAttachment, onOpenAttachment, onRevealAttachment, onRemoveAttachment, onDelete, onClose, mobile = false }: Props) {
+export function TaskModal({ item, columns, projectTasks, availableLabels, attachments, onAction, onAddAttachments, onPreviewAttachment, onOpenAttachment, onRevealAttachment, onRemoveAttachment, onDelete, onClose, mobile = false }: Props) {
   const { locale, t } = useI18n();
   const [title, setTitle] = useState(item.title);
   const [description, setDescription] = useState(item.description);
@@ -142,7 +144,7 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
   const [assignee, setAssignee] = useState(item.assignee ?? '');
   const [columnId, setColumnId] = useState(item.moduleData.kanban.columnId);
   const [labels, setLabels] = useState(item.labels);
-  const [labelDraft, setLabelDraft] = useState('');
+  const labelOptions = availableLabels ?? labelUsageForItems(projectTasks);
   const [subtasks, setSubtasks] = useState<Subtask[]>(item.subtasks);
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const subtaskSensors = useSensors(
@@ -234,12 +236,6 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
       const newIndex = current.findIndex((subtask) => subtask.id === over.id);
       return oldIndex < 0 || newIndex < 0 ? current : arrayMove(current, oldIndex, newIndex);
     });
-  };
-
-  const addLabel = () => {
-    const clean = labelDraft.trim();
-    if (clean && !labels.includes(clean)) setLabels((current) => [...current, clean]);
-    setLabelDraft('');
   };
 
   const addAttachments = async (kind: 'files' | 'folders' | 'references') => {
@@ -613,16 +609,7 @@ export function TaskModal({ item, columns, projectTasks, attachments, onAction, 
 
             <div className="property-field label-property">
               <span><Tag size={15} /> {t('Labels')}</span>
-              <div className="modal-labels">
-                {labels.map((label) => <button key={label} onClick={() => setLabels((current) => current.filter((value) => value !== label))}>{label}<X size={11} /></button>)}
-              </div>
-              <input
-                value={labelDraft}
-                onChange={(event) => setLabelDraft(event.target.value)}
-                onKeyDown={(event) => event.key === 'Enter' && addLabel()}
-                onBlur={addLabel}
-                placeholder={t('Add label…')}
-              />
+              <LabelPicker value={labels} options={labelOptions} onChange={setLabels} />
             </div>
 
             <div className="task-created">{t('Created {{date}}', { date: new Date(item.createdAt).toLocaleDateString(locale, { month: 'long', day: 'numeric', year: 'numeric' }) })}</div>

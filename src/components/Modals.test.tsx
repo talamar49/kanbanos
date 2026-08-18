@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceAction } from '../domain/types';
@@ -15,7 +15,7 @@ describe('project and task creation', () => {
     const user = userEvent.setup();
     const onAction = vi.fn();
     const onClose = vi.fn();
-    renderWithPreferences(<ProjectModal initialTargetDate="2027-05-20" onAction={onAction} onClose={onClose} />);
+    renderWithPreferences(<ProjectModal existingProjects={[]} initialTargetDate="2027-05-20" onAction={onAction} onClose={onClose} />);
 
     await user.type(screen.getByPlaceholderText('e.g. Mobile app launch'), '  Mobile launch  ');
     await user.type(screen.getByPlaceholderText('What does success look like?'), '  Ship a calm release  ');
@@ -36,12 +36,34 @@ describe('project and task creation', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('defaults new projects to a color not already used in the workspace', async () => {
+    const user = userEvent.setup();
+    const existingProjects = [
+      createProject('First project', '#6c5ce7'),
+      createProject('Second project', '#1f9d78'),
+    ];
+    const onAction = vi.fn();
+    renderWithPreferences(
+      <ProjectModal existingProjects={existingProjects} onAction={onAction} onClose={vi.fn()} />,
+    );
+
+    await user.type(screen.getByPlaceholderText('e.g. Mobile app launch'), 'Third project');
+    await user.click(screen.getByRole('button', { name: 'Create project' }));
+
+    const action = onAction.mock.calls[0][0] as WorkspaceAction;
+    expect(action.type).toBe('addProject');
+    if (action.type === 'addProject') {
+      expect(action.project.color).toBe('#e58b4a');
+      expect(existingProjects.map((project) => project.color)).not.toContain(action.project.color);
+    }
+  });
+
   it('autosaves edited project details when the dialog closes', async () => {
     const user = userEvent.setup();
     const project = createProject('Original', '#6c5ce7', 'Old description');
     const onAction = vi.fn();
     const onClose = vi.fn();
-    renderWithPreferences(<ProjectModal project={project} onAction={onAction} onClose={onClose} />);
+    renderWithPreferences(<ProjectModal project={project} existingProjects={[project]} onAction={onAction} onClose={onClose} />);
 
     const name = screen.getByDisplayValue('Original');
     await user.clear(name);
@@ -62,7 +84,15 @@ describe('project and task creation', () => {
     const project = workspace.projects[0];
     const columns = workspace.modules.kanban.projects[project.id].columns;
     const onCreate = vi.fn();
-    renderWithPreferences(<TaskComposerModal project={project} columns={columns} onCreate={onCreate} onClose={vi.fn()} />);
+    renderWithPreferences(
+      <TaskComposerModal
+        project={project}
+        columns={columns}
+        availableLabels={[{ label: 'Design', count: 2 }, { label: 'Release', count: 3 }]}
+        onCreate={onCreate}
+        onClose={vi.fn()}
+      />,
+    );
 
     await user.type(screen.getByLabelText('What needs to happen?'), '  Prepare release notes  ');
     await user.selectOptions(screen.getByLabelText('Status'), 'progress');
@@ -71,6 +101,14 @@ describe('project and task creation', () => {
     fireEvent.change(dates[0], { target: { value: '2027-04-01' } });
     fireEvent.change(dates[1], { target: { value: '2027-04-03' } });
     fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1.5' } });
+    const labelSearch = screen.getByRole('combobox', { name: 'Search or create labels' });
+    await user.click(labelSearch);
+    const existingLabels = screen.getByRole('listbox', { name: 'Existing labels' });
+    expect(within(existingLabels).getByRole('option', { name: /Design/ })).toBeInTheDocument();
+    expect(within(existingLabels).getByRole('option', { name: /Release/ })).toBeInTheDocument();
+    await user.type(labelSearch, 'rel');
+    await user.click(within(existingLabels).getByRole('option', { name: /Release/ }));
+    expect(screen.getByRole('button', { name: 'Remove label Release' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Create task' }));
 
     expect(onCreate).toHaveBeenCalledWith({
@@ -80,6 +118,7 @@ describe('project and task creation', () => {
       startDate: '2027-04-01',
       dueDate: '2027-04-03',
       estimateMinutes: 90,
+      labels: ['Release'],
     });
   });
 });
@@ -158,7 +197,7 @@ describe('rich task details', () => {
     const user = userEvent.setup();
     const workspace = createEmptyWorkspace();
     const projectId = workspace.projects[0].id;
-    const dependency = createWorkItem(projectId, 'planned', 'Foundation', 1000);
+    const dependency = createWorkItem(projectId, 'planned', 'Foundation', 1000, { labels: ['Release', 'Research'] });
     const item = createWorkItem(projectId, 'planned', 'Launch', 2000);
     const onAction = vi.fn();
     const onClose = vi.fn();
@@ -186,7 +225,14 @@ describe('rich task details', () => {
     await user.selectOptions(screen.getByLabelText('Priority'), 'urgent');
     await user.selectOptions(screen.getByText('Depends on').closest('.dependency-property')!.querySelector('select')!, dependency.id);
     await user.type(screen.getByPlaceholderText('Initials'), 'alex');
-    await user.type(screen.getByPlaceholderText('Add label…'), 'Release{Enter}');
+    const labelSearch = screen.getByRole('combobox', { name: 'Search or create labels' });
+    await user.click(labelSearch);
+    const existingLabels = screen.getByRole('listbox', { name: 'Existing labels' });
+    expect(within(existingLabels).getByRole('option', { name: /Research/ })).toBeInTheDocument();
+    await user.type(labelSearch, 'rel');
+    await user.click(within(existingLabels).getByRole('option', { name: /Release/ }));
+    await user.type(labelSearch, 'Launch{Enter}');
+    expect(screen.getByRole('button', { name: 'Remove label Launch' })).toBeInTheDocument();
     await user.type(screen.getByPlaceholderText('Add a subtask'), 'Run QA{Enter}');
 
     await user.click(screen.getByRole('button', { name: 'Add link' }));
@@ -208,7 +254,7 @@ describe('rich task details', () => {
         priority: 'urgent',
         dependencyIds: [dependency.id],
         assignee: 'ALE',
-        labels: ['Release'],
+        labels: ['Release', 'Launch'],
         subtasks: [expect.objectContaining({ title: 'Run QA', completed: false })],
         links: [expect.objectContaining({ url: 'https://example.com/release' })],
       }),

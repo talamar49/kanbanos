@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 const DARK_PANEL = '#424852';
 const DARK_OVERLAY = '#514c67';
 const DARK_SECTION = '#383e48';
+const DARK_INPUT = '#3d444e';
 
 function luminance(color: string) {
   const channels = color.startsWith('#')
@@ -46,6 +47,15 @@ describe('dark theme text contrast', () => {
         </aside>
         <footer class="modal-footer" style="background: ${DARK_SECTION}"><span class="autosave-state">Saved automatically</span></footer>
       </div>
+      <div class="label-picker" style="background: ${DARK_PANEL}">
+        <div class="label-picker-input" style="background: ${DARK_PANEL}"><input aria-label="Search labels" value="Release" /></div>
+        <div class="label-picker-menu" style="background: ${DARK_PANEL}"><div class="label-picker-options"><button><strong>Release</strong></button></div></div>
+      </div>
+      <div class="quick-add" style="background: ${DARK_PANEL}">
+        <textarea aria-label="New Kanban task" style="background: ${DARK_INPUT}">A multiline task</textarea>
+        <span class="quick-add-label-heading">Labels</span>
+        <div class="quick-add-actions"><button>Cancel</button><button class="quick-add-submit">Add task</button></div>
+      </div>
       <div class="task-card" style="background: ${DARK_PANEL}"><div class="drag-overlay-hint">Drop to move</div></div>
       <div class="timeline-drag-overlay" style="background: ${DARK_OVERLAY}"><div><span>Drop to update the Kanban order</span></div></div>
       <div class="unscheduled-tasks" style="background: ${DARK_PANEL}">
@@ -84,6 +94,10 @@ describe('dark theme text contrast', () => {
       ['property heading', '.task-properties h3', DARK_SECTION],
       ['dependency help', '.dependency-property > small', DARK_SECTION],
       ['autosave status', '.autosave-state', DARK_SECTION],
+      ['label search', '.label-picker-input input', DARK_PANEL],
+      ['label option', '.label-picker-options strong', DARK_PANEL],
+      ['Kanban task composer', '.quick-add > textarea', DARK_INPUT],
+      ['Kanban composer label heading', '.quick-add-label-heading', DARK_PANEL],
       ['Kanban drag hint', '.drag-overlay-hint', DARK_PANEL],
       ['timeline drag hint', '.timeline-drag-overlay span', DARK_OVERLAY],
       ['unscheduled count', '.unscheduled-tasks > header small', DARK_SECTION],
