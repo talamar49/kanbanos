@@ -4,6 +4,23 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-18
+
+### Added
+
+- Searchable reusable labels in task creation and details, with workspace suggestions, usage counts, duplicate cleanup, and Kanban label filtering.
+- Direct completion and delete actions on Kanban cards while preserving full-card dragging and exact drop previews.
+
+### Improved
+
+- Restored subtasks as embedded task checklists; workspace normalization safely folds any parent-linked data back into its original task.
+- Persisted Board and Timeline project scope, Timeline zoom, and the independently selected starting position for every time range.
+- Refined quick task capture with labels, multiline input, top-of-column insertion, WIP-limit removal, automatic project colors, bidirectional text handling, and light/dark RTL styling.
+
+### Quality
+
+- Expanded regression coverage for label lifecycle and filtering, card quick actions, embedded-subtask compatibility, persisted Timeline positions, task ordering, localization, and theme contrast.
+
 ## [0.6.0] - 2026-08-16
 
 ### Added
