@@ -4,6 +4,23 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-19
+
+### Added
+
+- A full-screen Notes workspace with responsive masonry cards, live Typora-style Markdown editing, search, labels, pinning, project scope, and durable autosave.
+- Configurable Timeline working days with clearly marked gaps for hidden non-working dates.
+
+### Improved
+
+- Refined Notes with restrained card motion, keyboard capture, polished light/dark surfaces, a bundled Hebrew font, automatic bidirectional text, and right-aligned RTL task checkboxes.
+- Expanded Timeline scheduling across filtered work weeks and improved sidebar project navigation with open-task progress and quick rename actions.
+- Kept Kanban column colors visually aligned with their projects across planning surfaces.
+
+### Quality
+
+- Added regression coverage for Markdown persistence and interactions, RTL checkbox geometry, responsive note-card motion, working-day scheduling, sidebar progress, localization, and theme contrast.
+
 ## [0.7.0] - 2026-08-18
 
 ### Added
