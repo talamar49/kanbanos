@@ -314,6 +314,20 @@ describe('preferences and normalization', () => {
     expect(reloaded.preferences.timelineWindowStarts).toEqual({ 'two-weeks': '2026-08-23' });
   });
 
+  it('persists valid timeline working days and restores safe defaults for legacy data', () => {
+    const document = createEmptyWorkspace();
+    const weekdays = workspaceReducer(document, { type: 'setTimelineWorkingDays', days: [5, 1, 3, 2, 4] });
+
+    expect(weekdays.preferences.timelineWorkingDays).toEqual([1, 2, 3, 4, 5]);
+    expect(isWorkspaceDocument(JSON.parse(JSON.stringify(weekdays)))).toBe(true);
+    const reloaded = normalizeWorkspaceDocument(JSON.parse(JSON.stringify(weekdays)) as WorkspaceDocument);
+    expect(reloaded.preferences.timelineWorkingDays).toEqual([1, 2, 3, 4, 5]);
+
+    const legacy = { ...document, preferences: { activeProjectId: document.preferences.activeProjectId } } as WorkspaceDocument;
+    expect(normalizeWorkspaceDocument(legacy).preferences.timelineWorkingDays).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(workspaceReducer(weekdays, { type: 'setTimelineWorkingDays', days: [] })).toBe(weekdays);
+  });
+
   it('loads and normalizes legacy documents through the reducer', () => {
     const { document, firstId } = workspaceWithTasks();
     const legacy = {
@@ -563,6 +577,8 @@ describe('workspace document validation', () => {
       { ...valid, resources: { attachments: { bad: { ...attachment(), kind: 'link' } } } },
       { ...valid, preferences: { ...valid.preferences, timelineLayout: 'wide' } },
       { ...valid, preferences: { ...valid.preferences, projectScope: 'favorites' } },
+      { ...valid, preferences: { ...valid.preferences, timelineWorkingDays: [] } },
+      { ...valid, preferences: { ...valid.preferences, timelineWorkingDays: [1, 1] } },
       { ...valid, preferences: { ...valid.preferences, collapsedKanbanSubtaskItemIds: [1] } },
       { ...valid, modules: { ...valid.modules, canvas: { version: 2, projects: {} } } },
     ];

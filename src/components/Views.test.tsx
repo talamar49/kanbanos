@@ -176,15 +176,23 @@ describe('workspace navigation', () => {
 
     await user.click(screen.getByRole('button', { name: 'Timeline' }));
     await user.click(screen.getByRole('button', { name: 'Canvas' }));
+    await user.click(screen.getByRole('button', { name: /Notes/ }));
     await user.click(screen.getByRole('button', { name: 'Roadmap' }));
     await user.click(screen.getByRole('button', { name: /Files/ }));
-    expect(callbacks.onChangeView.mock.calls.map(([view]) => view)).toEqual(['timeline', 'canvas', 'roadmap', 'files']);
+    expect(callbacks.onChangeView.mock.calls.map(([view]) => view)).toEqual(['timeline', 'canvas', 'notes', 'roadmap', 'files']);
 
     const websiteButton = screen.getByText('Website').closest('button')!;
     await user.click(websiteButton);
     expect(callbacks.onSelectProject).toHaveBeenCalledWith(document.projects[1].id);
     await user.dblClick(websiteButton);
     expect(callbacks.onRenameProject).toHaveBeenCalledWith(document.projects[1].id);
+
+    const projectOptions = screen.getByRole('button', { name: 'Options for Website' });
+    expect(projectOptions).toHaveAttribute('aria-expanded', 'false');
+    await user.click(projectOptions);
+    expect(projectOptions).toHaveAttribute('aria-expanded', 'true');
+    await user.click(screen.getByRole('menuitem', { name: 'Rename project' }));
+    expect(callbacks.onRenameProject).toHaveBeenLastCalledWith(document.projects[1].id);
 
     await user.click(screen.getByRole('button', { name: /Local repo/ }));
     await user.click(screen.getByRole('button', { name: 'Add remote repository' }));
@@ -194,6 +202,34 @@ describe('workspace navigation', () => {
     expect(callbacks.onOpenDiagnostics).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole('button', { name: /Retry sync/ }));
     expect(callbacks.onRetrySync).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows open tasks out of total tasks for every sidebar project', () => {
+    const document = featureWorkspace();
+    renderWithPreferences(
+      <Sidebar
+        document={document}
+        activeProject={document.projects[0]}
+        repositoryName="Progress repo"
+        syncState="synced"
+        syncError=""
+        activeView="board"
+        hasRemote={false}
+        onChangeView={vi.fn()}
+        onSelectProject={vi.fn()}
+        onAddProject={vi.fn()}
+        onRenameProject={vi.fn()}
+        onAddRemote={vi.fn()}
+        onRetrySync={vi.fn()}
+        onRevealRepository={vi.fn()}
+        onDisconnect={vi.fn()}
+      />,
+    );
+
+    const firstProject = screen.getByText('My first project').closest('button')!;
+    const websiteProject = screen.getByText('Website').closest('button')!;
+    expect(within(firstProject).getByLabelText('1 of 2 tasks open')).toHaveTextContent('1/2');
+    expect(within(websiteProject).getByLabelText('1 of 1 task open')).toHaveTextContent('1/1');
   });
 
   it('opens the keyboard shortcut reference from the sidebar and question mark key', async () => {
@@ -321,6 +357,10 @@ describe('workspace navigation', () => {
     expect(screen.getByLabelText('Display preferences')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Hebrew' }));
     expect(window.document.documentElement).toHaveAttribute('dir', 'rtl');
+    expect(screen.getByLabelText('1 מתוך 2 משימות פתוחות')).toHaveTextContent('1/2');
+
+    await user.click(screen.getByRole('button', { name: 'מעבר לערכת נושא כהה' }));
+    expect(window.document.documentElement).toHaveAttribute('data-theme', 'dark');
 
     await user.click(screen.getByRole('button', { name: /עזרה וקיצורי דרך/ }));
     const shortcuts = screen.getByRole('dialog', { name: 'קיצורי מקלדת' });
@@ -1245,6 +1285,53 @@ describe('timeline, roadmap, canvas, and files', () => {
     expect(onCreateTask).toHaveBeenLastCalledWith({ columnId: 'backlog' });
   });
 
+  it('hides non-working days, marks calendar gaps, and lets people change working days', async () => {
+    const user = userEvent.setup();
+    const document = createEmptyWorkspace('Working days timeline');
+    const project = document.projects[0];
+    const sunday = new Date();
+    sunday.setHours(12, 0, 0, 0);
+    sunday.setDate(sunday.getDate() - sunday.getDay());
+    const monday = new Date(sunday);
+    monday.setDate(monday.getDate() + 1);
+    const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const sundayTask = createWorkItem(project.id, 'planned', 'Sunday-only timeline task', 1000, { startDate: localDate(sunday), dueDate: localDate(sunday) });
+    const mondayTask = createWorkItem(project.id, 'planned', 'Monday timeline task', 1001, { startDate: localDate(monday), dueDate: localDate(monday) });
+    document.items = { [sundayTask.id]: sundayTask, [mondayTask.id]: mondayTask };
+    document.preferences.timelineWorkingDays = [1, 2, 3, 4, 5];
+    const callbacks = commonViewCallbacks();
+
+    renderWithPreferences(
+      <TimelineView
+        document={document}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        onCreateTask={vi.fn()}
+        {...callbacks}
+      />,
+    );
+
+    const visibleDates = () => Array.from(window.document.querySelectorAll<HTMLElement>('.timeline-chart > .timeline-calendar-header .timeline-days > div'));
+    expect(visibleDates()).toHaveLength(10);
+    expect(visibleDates().some((cell) => cell.dataset.date === localDate(sunday))).toBe(false);
+    expect(screen.queryByText('Sunday-only timeline task')).not.toBeInTheDocument();
+    expect(screen.getByText('Monday timeline task')).toBeInTheDocument();
+    const secondMonday = visibleDates().find((cell) => cell.dataset.hiddenDaysBefore === '2');
+    expect(secondMonday).toHaveClass('after-non-working-gap');
+    expect(secondMonday).toHaveAttribute('title', '2 non-working days hidden');
+
+    await user.click(screen.getByRole('button', { name: 'Working days' }));
+    const sundayOption = screen.getByRole('checkbox', { name: 'Sunday' });
+    expect(sundayOption).not.toBeChecked();
+    await user.click(sundayOption);
+
+    expect(callbacks.onAction).toHaveBeenCalledWith({ type: 'setTimelineWorkingDays', days: [0, 1, 2, 3, 4, 5] });
+    expect(visibleDates().some((cell) => cell.dataset.date === localDate(sunday))).toBe(true);
+    expect(screen.getByText('Sunday-only timeline task')).toBeInTheDocument();
+    expect(window.document.querySelector('.timeline-days > .after-non-working-gap')).toHaveAttribute('title', '1 non-working day hidden');
+  });
+
   it('keeps completion and delete quick actions off scheduled and unscheduled timeline cards', async () => {
     const user = userEvent.setup();
     const document = createEmptyWorkspace('Timeline card actions');
@@ -1490,6 +1577,59 @@ describe('timeline, roadmap, canvas, and files', () => {
     expect(new Set(yearDays.map(shadeOf))).toEqual(new Set(['week-shade-a', 'week-shade-b']));
     const weekStartRules = globalStyles.split('}').filter((rule) => rule.includes('week-start'));
     expect(weekStartRules.every((rule) => !rule.includes('border-inline-start'))).toBe(true);
+  });
+
+  it('keeps dependency geometry and gap separators aligned when non-working days are hidden', () => {
+    localStorage.setItem('kanbanos.language', 'he');
+    localStorage.setItem('kanbanos.theme', 'dark');
+    const document = createEmptyWorkspace('Aligned working-day timeline');
+    const project = document.projects[0];
+    const sunday = new Date();
+    sunday.setHours(12, 0, 0, 0);
+    sunday.setDate(sunday.getDate() - sunday.getDay());
+    const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const sourceDay = new Date(sunday);
+    sourceDay.setDate(sourceDay.getDate() + 1);
+    const targetDay = new Date(sunday);
+    targetDay.setDate(targetDay.getDate() + 3);
+    const source = createWorkItem(project.id, 'planned', 'Dependency source', 1000, { startDate: localDate(sourceDay), dueDate: localDate(sourceDay) });
+    const target = createWorkItem(project.id, 'planned', 'Dependency target', 1001, { startDate: localDate(targetDay), dueDate: localDate(targetDay), dependencyIds: [source.id] });
+    document.items = { [source.id]: source, [target.id]: target };
+    document.preferences.timelineLayout = 'compact';
+    document.preferences.timelineZoom = 'four-weeks';
+    document.preferences.timelineWindowStarts = { 'four-weeks': localDate(sunday) };
+    document.preferences.timelineWorkingDays = [0, 1, 2, 3, 4];
+
+    renderWithPreferences(
+      <TimelineView
+        document={document}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        onCreateTask={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+
+    const firstBand = window.document.querySelector<HTMLElement>('.timeline-four-week-board > .timeline-chart')!;
+    expect(firstBand.dataset.dayCount).toBe('10');
+    expect(firstBand.querySelectorAll('.timeline-days > .after-non-working-gap')).toHaveLength(1);
+    expect(firstBand.querySelectorAll('.timeline-drop-layer > .after-non-working-gap')).toHaveLength(1);
+    expect(firstBand.querySelectorAll('.timeline-row-grid > .after-non-working-gap')).toHaveLength(0);
+    expect(firstBand.querySelectorAll('.timeline-create-row > .after-non-working-gap')).toHaveLength(0);
+
+    const dependencyLayer = firstBand.querySelector<SVGElement>('svg.timeline-four-week-dependencies')!;
+    expect(dependencyLayer).toHaveAttribute('viewBox', expect.stringMatching(/^0 0 1000 /));
+    expect(dependencyLayer.querySelector(':scope > g')).toHaveAttribute('transform', 'translate(1000 0) scale(-1 1)');
+    expect(dependencyLayer.querySelector('.timeline-dependency-connector')).toBeInTheDocument();
+
+    const timelineContent = window.document.querySelector<HTMLElement>('.timeline-content')!;
+    Object.defineProperties(timelineContent, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 1400 },
+    });
+    fireEvent.wheel(firstBand, { deltaY: 180 });
+    expect(timelineContent.scrollTop).toBe(180);
   });
 
   it('keeps timeline cards compact and floats subtasks above the row', async () => {

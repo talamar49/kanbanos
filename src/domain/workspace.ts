@@ -13,6 +13,7 @@ import type {
   KanbanProjectSettings,
   Priority,
   Project,
+  ProjectNote,
   RoadmapHorizon,
   TimelineZoom,
   WorkItem,
@@ -25,6 +26,18 @@ export const PROJECT_COLORS = ['#6c5ce7', '#1f9d78', '#e58b4a', '#4c84e8', '#d45
 export const KANBAN_COLUMN_RULES: KanbanColumnRule[] = ['new-task', 'completed'];
 
 export const TIMELINE_ZOOMS: TimelineZoom[] = ['week', 'month', 'two-weeks', 'four-weeks', 'year'];
+export const DEFAULT_TIMELINE_WORKING_DAYS = [0, 1, 2, 3, 4, 5, 6];
+
+function isTimelineWorkingDays(value: unknown): value is number[] {
+  return Array.isArray(value) && value.length > 0 && new Set(value).size === value.length
+    && value.every((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+}
+
+function normalizeTimelineWorkingDays(value: unknown): number[] {
+  return isTimelineWorkingDays(value)
+    ? [...value].sort((left, right) => left - right)
+    : [...DEFAULT_TIMELINE_WORKING_DAYS];
+}
 
 function isIsoCalendarDate(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -207,6 +220,20 @@ export function createProjectSettings(): KanbanProjectSettings {
   return { columns: DEFAULT_COLUMNS.map((column) => ({ ...column, rules: [...(column.rules ?? [])] })) };
 }
 
+export function createProjectNote(projectId: string, title = 'Untitled note'): ProjectNote {
+  const timestamp = now();
+  return {
+    id: id(),
+    projectId,
+    title: title.trim() || 'Untitled note',
+    content: '',
+    labels: [],
+    pinned: false,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
 export function createWorkItem(
   projectId: string,
   columnId: string,
@@ -272,6 +299,7 @@ export function createEmptyWorkspace(
         version: 1,
         projects: { [project.id]: createCanvasProject() },
       },
+      notes: { version: 1, notes: {} },
     },
     resources: { attachments: {} },
     preferences: { activeProjectId: project.id, roadmapHorizonOrder: [...ROADMAP_HORIZONS], projectScope: 'current', timelineLayout: 'tasks', collapsedKanbanSubtaskItemIds: [] },
@@ -383,6 +411,7 @@ export function createDefaultWorkspace(workspaceName = 'My workspace'): Workspac
         version: 1,
         projects: Object.fromEntries(projects.map((project) => [project.id, createCanvasProject()])),
       },
+      notes: { version: 1, notes: {} },
     },
     resources: { attachments: {} },
     preferences: { activeProjectId: product.id, roadmapHorizonOrder: [...ROADMAP_HORIZONS], projectScope: 'current', timelineLayout: 'tasks', collapsedKanbanSubtaskItemIds: [] },
@@ -499,6 +528,24 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
       typeof attachment.createdAt === 'string',
     )
   );
+  const notesCandidate = candidate.modules?.notes as WorkspaceDocument['modules']['notes'] | undefined;
+  const notesValid = notesCandidate === undefined || (
+    notesCandidate.version === 1 &&
+    Boolean(notesCandidate.notes) &&
+    typeof notesCandidate.notes === 'object' &&
+    !Array.isArray(notesCandidate.notes) &&
+    Object.entries(notesCandidate.notes).every(([noteId, note]) =>
+      Boolean(note) &&
+      note.id === noteId &&
+      typeof note.projectId === 'string' &&
+      typeof note.title === 'string' &&
+      typeof note.content === 'string' &&
+      Array.isArray(note.labels) && note.labels.every((label) => typeof label === 'string') &&
+      typeof note.pinned === 'boolean' &&
+      typeof note.createdAt === 'string' &&
+      typeof note.updatedAt === 'string'
+    )
+  );
   const canvasCandidate = candidate.modules?.canvas as WorkspaceDocument['modules']['canvas'] | undefined;
   const canvasValid = canvasCandidate === undefined || (
     canvasCandidate.version === 1 &&
@@ -529,6 +576,7 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
     itemsValid &&
     kanbanValid &&
     canvasValid &&
+    notesValid &&
     attachmentsValid &&
     typeof candidate.preferences?.activeProjectId === 'string' &&
     (candidate.preferences.roadmapHorizonOrder === undefined || (
@@ -538,6 +586,7 @@ export function isWorkspaceDocument(value: unknown): value is WorkspaceDocument 
     (candidate.preferences.projectScope === undefined || candidate.preferences.projectScope === 'current' || candidate.preferences.projectScope === 'all') &&
     (candidate.preferences.timelineLayout === undefined || candidate.preferences.timelineLayout === 'tasks' || candidate.preferences.timelineLayout === 'compact') &&
     (candidate.preferences.timelineZoom === undefined || TIMELINE_ZOOMS.includes(candidate.preferences.timelineZoom)) &&
+    (candidate.preferences.timelineWorkingDays === undefined || isTimelineWorkingDays(candidate.preferences.timelineWorkingDays)) &&
     (candidate.preferences.timelineWindowStarts === undefined || (
       Boolean(candidate.preferences.timelineWindowStarts) &&
       typeof candidate.preferences.timelineWindowStarts === 'object' &&
@@ -728,6 +777,28 @@ export function normalizeWorkspaceDocument(document: WorkspaceDocument): Workspa
     projectId,
     redirectCollapsedCanvasTasks(canvasProject, collapsedToRoot),
   ]));
+  const projectIds = new Set(document.projects.map((project) => project.id));
+  const canonicalNoteLabels = new Map<string, string>();
+  const notes = Object.fromEntries(Object.entries(document.modules.notes?.notes ?? {}).flatMap(([noteId, note]) => {
+    if (!note || note.id !== noteId || !projectIds.has(note.projectId)) return [];
+    const labels: string[] = [];
+    const seen = new Set<string>();
+    (note.labels ?? []).forEach((rawLabel) => {
+      const label = rawLabel.trim();
+      const key = label.toLocaleLowerCase();
+      if (!label || seen.has(key)) return;
+      seen.add(key);
+      if (!canonicalNoteLabels.has(key)) canonicalNoteLabels.set(key, label);
+      labels.push(canonicalNoteLabels.get(key)!);
+    });
+    return [[noteId, {
+      ...note,
+      title: note.title.trim() || 'Untitled note',
+      content: note.content ?? '',
+      labels,
+      pinned: Boolean(note.pinned),
+    } satisfies ProjectNote]];
+  }));
   const timelineWindowStarts = normalizeTimelineWindowStarts(document.preferences.timelineWindowStarts);
   const {
     timelineWindowStarts: _storedTimelineWindowStarts,
@@ -741,6 +812,7 @@ export function normalizeWorkspaceDocument(document: WorkspaceDocument): Workspa
       ...document.modules,
       kanban: { ...document.modules.kanban, projects: kanbanProjects },
       canvas: { version: 1, projects: redirectedCanvasProjects },
+      notes: { version: 1, notes },
     },
     resources: {
       ...(document.resources ?? {}),
@@ -751,6 +823,7 @@ export function normalizeWorkspaceDocument(document: WorkspaceDocument): Workspa
       roadmapHorizonOrder: normalizeRoadmapHorizonOrder(document.preferences.roadmapHorizonOrder),
       projectScope: document.preferences.projectScope === 'all' ? 'all' : 'current',
       timelineLayout: document.preferences.timelineLayout === 'compact' ? 'compact' : 'tasks',
+      timelineWorkingDays: normalizeTimelineWorkingDays(document.preferences.timelineWorkingDays),
       ...(document.preferences.timelineZoom && TIMELINE_ZOOMS.includes(document.preferences.timelineZoom)
         ? { timelineZoom: document.preferences.timelineZoom }
         : {}),
@@ -889,6 +962,17 @@ export function workspaceReducer(
     });
   }
 
+  if (action.type === 'setTimelineWorkingDays') {
+    if (!isTimelineWorkingDays(action.days)) return document;
+    const days = normalizeTimelineWorkingDays(action.days);
+    const current = normalizeTimelineWorkingDays(document.preferences.timelineWorkingDays);
+    if (days.length === current.length && days.every((day, index) => day === current[index])) return document;
+    return touch({
+      ...document,
+      preferences: { ...document.preferences, timelineWorkingDays: days },
+    });
+  }
+
   if (action.type === 'setKanbanSubtasksCollapsed') {
     if (!document.items[action.itemId]) return document;
     const collapsedItemIds = new Set(document.preferences.collapsedKanbanSubtaskItemIds ?? []);
@@ -902,6 +986,50 @@ export function workspaceReducer(
         collapsedKanbanSubtaskItemIds: Array.from(collapsedItemIds),
       },
     });
+  }
+
+  if (action.type === 'addNote') {
+    if (!document.projects.some((project) => project.id === action.note.projectId) || document.modules.notes.notes[action.note.id]) return document;
+    return touch({
+      ...document,
+      modules: {
+        ...document.modules,
+        notes: { version: 1, notes: { ...document.modules.notes.notes, [action.note.id]: action.note } },
+      },
+    });
+  }
+
+  if (action.type === 'updateNote') {
+    const current = document.modules.notes.notes[action.noteId];
+    if (!current) return document;
+    const changes = { ...action.changes };
+    if (changes.labels !== undefined) {
+      const seen = new Set<string>();
+      changes.labels = changes.labels.flatMap((rawLabel) => {
+        const label = rawLabel.trim();
+        const key = label.toLocaleLowerCase();
+        if (!label || seen.has(key)) return [];
+        seen.add(key);
+        return [label];
+      });
+    }
+    return touch({
+      ...document,
+      modules: {
+        ...document.modules,
+        notes: {
+          version: 1,
+          notes: { ...document.modules.notes.notes, [action.noteId]: { ...current, ...changes, updatedAt: now() } },
+        },
+      },
+    });
+  }
+
+  if (action.type === 'deleteNote') {
+    if (!document.modules.notes.notes[action.noteId]) return document;
+    const notes = { ...document.modules.notes.notes };
+    delete notes[action.noteId];
+    return touch({ ...document, modules: { ...document.modules, notes: { version: 1, notes } } });
   }
 
   if (action.type === 'reorderRoadmapColumns') {
@@ -1434,6 +1562,22 @@ export function labelUsageForItems(items: ReadonlyArray<WorkItem>): LabelUsage[]
       const key = label.toLocaleLowerCase();
       if (!label || labelsOnTask.has(key)) return;
       labelsOnTask.add(key);
+      const existing = usages.get(key);
+      usages.set(key, existing ? { ...existing, count: existing.count + 1 } : { label, count: 1 });
+    });
+  });
+  return Array.from(usages.values()).sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }));
+}
+
+export function labelUsageForNotes(notes: ReadonlyArray<ProjectNote>): LabelUsage[] {
+  const usages = new Map<string, LabelUsage>();
+  notes.forEach((note) => {
+    const labelsOnNote = new Set<string>();
+    note.labels.forEach((rawLabel) => {
+      const label = rawLabel.trim();
+      const key = label.toLocaleLowerCase();
+      if (!label || labelsOnNote.has(key)) return;
+      labelsOnNote.add(key);
       const existing = usages.get(key);
       usages.set(key, existing ? { ...existing, count: existing.count + 1 } : { label, count: 1 });
     });

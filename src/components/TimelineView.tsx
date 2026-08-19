@@ -1,4 +1,4 @@
-import { CSSProperties, Fragment, type FormEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, Fragment, type FormEvent, type ReactNode, type WheelEvent as ReactWheelEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   closestCorners,
@@ -21,6 +21,7 @@ import {
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
+  CalendarDays,
   CalendarRange,
   Check,
   ChevronDown,
@@ -37,7 +38,7 @@ import {
   X,
 } from 'lucide-react';
 import type { KanbanColumn, Project, ProjectScope, TaskDraft, TimelineLayout, TimelineZoom, WorkItem, WorkspaceAction, WorkspaceDocument } from '../domain/types';
-import { columnForRule, itemsForColumn } from '../domain/workspace';
+import { columnForRule, DEFAULT_TIMELINE_WORKING_DAYS, itemsForColumn } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import { PreferencesControls } from './PreferencesControls';
 import { ProjectScopeSelect } from './ProjectScopeSelect';
@@ -305,6 +306,31 @@ function spanForWindow(rangeStart: Date, zoom: TimelineZoom): number {
   return zoom === 'two-weeks' ? 14 : 28;
 }
 
+function scheduledTaskForDays(item: WorkItem, days: Date[], rangeStart: Date, rangeEnd: Date): ScheduledTask | null {
+  if (!item.dueDate || days.length === 0) return null;
+  const due = parseLocalDate(item.dueDate);
+  const start = parseLocalDate(item.startDate ?? item.dueDate);
+  if (due < rangeStart || start > rangeEnd) return null;
+  const startIndex = days.findIndex((day) => day >= start && day <= due);
+  if (startIndex < 0) return null;
+  let endIndex = startIndex;
+  for (let index = startIndex + 1; index < days.length && days[index] <= due; index += 1) endIndex = index;
+  return { item, start, due, startIndex, endIndex, endClipped: due > rangeEnd };
+}
+
+function hiddenDaysBefore(days: Date[], index: number): number {
+  if (index <= 0) return 0;
+  return Math.max(0, calendarDayDistance(days[index], days[index - 1]) - 1);
+}
+
+function gapClass(days: Date[], index: number): string {
+  return hiddenDaysBefore(days, index) > 0 ? ' after-non-working-gap' : '';
+}
+
+function firstVisibleTaskDay(entry: ScheduledTask, days: Date[]): Date | undefined {
+  return days.find((day) => day >= entry.start && day <= entry.due);
+}
+
 function monthSegmentsForDays(days: Date[]): TimelineMonthSegment[] {
   return days.reduce<TimelineMonthSegment[]>((segments, day, index) => {
     const id = `${day.getFullYear()}-${day.getMonth()}`;
@@ -391,10 +417,95 @@ const timelineCollisionDetection: CollisionDetection = (args) => {
   });
 };
 
-function TimelineDayDropZone({ day, active, today, weekend }: { day: Date; active: boolean; today: boolean; weekend: boolean }) {
+function TimelineDayDropZone({ day, active, today, weekend, gapBefore }: { day: Date; active: boolean; today: boolean; weekend: boolean; gapBefore: boolean }) {
   const date = iso(day);
   const { setNodeRef, isOver } = useDroppable({ id: `timeline-day:${date}` });
-  return <div ref={setNodeRef} data-date={date} className={`timeline-day-drop-zone ${weekBandClass(day)} ${today ? 'today' : ''} ${weekend ? 'weekend' : ''} ${active || isOver ? 'active' : ''}`} />;
+  return <div ref={setNodeRef} data-date={date} className={`timeline-day-drop-zone ${weekBandClass(day)} ${today ? 'today' : ''} ${weekend ? 'weekend' : ''} ${gapBefore ? 'after-non-working-gap' : ''} ${active || isOver ? 'active' : ''}`} />;
+}
+
+function WorkingDaysControl({ days, onChange }: { days: number[]; onChange: (days: number[]) => void }) {
+  const { locale, t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const controlRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!controlRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('pointerdown', closeOutside);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', closeOutside);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
+  const toggleDay = (day: number) => {
+    const next = days.includes(day) ? days.filter((candidate) => candidate !== day) : [...days, day];
+    if (next.length === 0) return;
+    onChange(next.sort((left, right) => left - right));
+  };
+
+  return (
+    <div className="timeline-working-days-control" ref={controlRef}>
+      <button
+        type="button"
+        className={`timeline-working-days-trigger ${open ? 'active' : ''}`}
+        aria-label={t('Working days')}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <CalendarDays size={17} />
+        <span>{t('Working days')}</span>
+        <b>{days.length === 7 ? t('Every day') : t('{{count}} days', { count: days.length })}</b>
+        <ChevronDown size={15} />
+      </button>
+      {open && (
+        <div className="timeline-working-days-menu" role="dialog" aria-label={t('Choose working days')}>
+          <header><strong>{t('Choose working days')}</strong><small>{t('Non-working days are hidden with a gap on the timeline.')}</small></header>
+          <div className="timeline-working-day-options">
+            {DEFAULT_TIMELINE_WORKING_DAYS.map((day) => {
+              const dayDate = new Date(2024, 0, 7 + day, 12);
+              const checked = days.includes(day);
+              return (
+                <label key={day}>
+                  <input type="checkbox" checked={checked} disabled={checked && days.length === 1} onChange={() => toggleDay(day)} />
+                  <span>{dayDate.toLocaleDateString(locale, { weekday: 'long' })}</span>
+                  <Check size={16} />
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TimelineDayHeader({ day, days, index, todayIso, weekday }: { day: Date; days: Date[]; index: number; todayIso: string; weekday: 'narrow' | 'short' }) {
+  const { locale, t } = useI18n();
+  const hiddenCount = hiddenDaysBefore(days, index);
+  const gapLabel = hiddenCount > 0 ? t(hiddenCount === 1 ? '{{count}} non-working day hidden' : '{{count}} non-working days hidden', { count: hiddenCount }) : undefined;
+  return (
+    <div
+      data-date={iso(day)}
+      data-hidden-days-before={hiddenCount || undefined}
+      title={gapLabel}
+      aria-label={gapLabel ? `${day.toLocaleDateString(locale, { weekday: 'long', month: 'long', day: 'numeric' })}. ${gapLabel}` : undefined}
+      className={`${weekBandClass(day)}${gapClass(days, index)} ${iso(day) === todayIso ? 'today' : ''} ${day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : ''}`}
+    >
+      <span>{day.toLocaleDateString(locale, { weekday })}</span><strong>{day.getDate()}</strong>
+    </div>
+  );
+}
+
+function TimelineGridGuide({ day, todayIso }: { day: Date; todayIso: string }) {
+  return <i className={`${weekBandClass(day)} ${iso(day) === todayIso ? 'today-line' : ''} ${day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : ''}`} />;
 }
 
 function TimelineDisplayRowView({ row, targeted, children }: { row: TimelineDisplayRow; targeted: boolean; children: ReactNode }) {
@@ -911,6 +1022,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
   const { direction, locale, t } = useI18n();
   const [windowStarts, setWindowStarts] = useState<Record<TimelineZoom, string>>(() => initialTimelineWindowStarts(document.preferences.timelineWindowStarts));
   const [zoom, setZoom] = useState<TimelineZoom>(() => initialTimelineZoom(document.preferences.timelineZoom, mobile));
+  const [workingDays, setWorkingDays] = useState<number[]>(() => document.preferences.timelineWorkingDays ?? [...DEFAULT_TIMELINE_WORKING_DAYS]);
   const windowStart = windowStarts[zoom];
   const layoutMode = document.preferences.timelineLayout ?? 'tasks';
   const setLayoutMode = (layout: TimelineLayout) => onAction({ type: 'setTimelineLayout', layout });
@@ -934,6 +1046,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
   const [fourWeekDependencyLayout, setFourWeekDependencyLayout] = useState<TimelineFourWeekDependencyLayout | null>(null);
   const [fourWeekRowHeights, setFourWeekRowHeights] = useState<Record<string, number>>({});
   const timelineContentRef = useRef<HTMLDivElement>(null);
+  const timelinePlannerRef = useRef<HTMLDivElement>(null);
   const timelineRowsRef = useRef<HTMLDivElement>(null);
   const chartScrollRef = useRef<HTMLDivElement>(null);
   const fourWeekBoardRef = useRef<HTMLDivElement>(null);
@@ -945,6 +1058,9 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
   useEffect(() => {
     setWindowStarts(initialTimelineWindowStarts(document.preferences.timelineWindowStarts));
   }, [document.preferences.timelineWindowStarts, document.workspace.id]);
+  useEffect(() => {
+    setWorkingDays(document.preferences.timelineWorkingDays ?? [...DEFAULT_TIMELINE_WORKING_DAYS]);
+  }, [document.preferences.timelineWorkingDays, document.workspace.id]);
   useLayoutEffect(() => {
     if (!mobile) return;
     if (chartScrollRef.current) chartScrollRef.current.scrollLeft = 0;
@@ -984,7 +1100,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const rangeStart = new Date(`${windowStart}T12:00:00`);
-  const span = spanForWindow(rangeStart, zoom);
+  const calendarSpan = spanForWindow(rangeStart, zoom);
   const setActiveWindowStart = (nextStart: Date) => {
     const startDate = iso(nextStart);
     setWindowStarts((current) => ({ ...current, [zoom]: startDate }));
@@ -994,11 +1110,13 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
     const nextStart = new Date(rangeStart);
     if (zoom === 'year') nextStart.setFullYear(nextStart.getFullYear() + direction);
     else if (zoom === 'month') nextStart.setMonth(nextStart.getMonth() + direction);
-    else nextStart.setDate(nextStart.getDate() + direction * (zoom === 'two-weeks' ? 7 : span));
+    else nextStart.setDate(nextStart.getDate() + direction * (zoom === 'two-weeks' ? 7 : calendarSpan));
     setActiveWindowStart(nextStart);
   };
-  const days = Array.from({ length: span }, (_, index) => dateAt(rangeStart, index));
-  const rangeEnd = days[days.length - 1];
+  const calendarDays = Array.from({ length: calendarSpan }, (_, index) => dateAt(rangeStart, index));
+  const rangeEnd = calendarDays[calendarDays.length - 1];
+  const days = calendarDays.filter((day) => workingDays.includes(day.getDay()));
+  const span = days.length;
   const isYearView = zoom === 'year';
   const isFourWeekView = zoom === 'four-weeks';
   const dayWidth = zoom === 'week' ? 82 : zoom === 'two-weeks' ? 72 : zoom === 'month' || zoom === 'four-weeks' ? 58 : 8;
@@ -1045,42 +1163,30 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
     return new Map(ordered.map((item, index) => [item.id, index]));
   }, [document.modules.kanban.projects, projectItems, scopedProjects]);
   const scheduled = useMemo<ScheduledTask[]>(() => projectItems
-    .filter((item) => item.dueDate)
-    .map((item) => {
-      const due = new Date(`${item.dueDate}T12:00:00`);
-      const start = new Date(`${item.startDate ?? item.dueDate}T12:00:00`);
-      return {
-        item,
-        start,
-        due,
-        startIndex: Math.max(0, calendarDayDistance(start, rangeStart)),
-        endIndex: Math.min(span - 1, calendarDayDistance(due, rangeStart)),
-        endClipped: due > rangeEnd,
-      };
+    .flatMap((item) => {
+      const positioned = scheduledTaskForDays(item, days, rangeStart, rangeEnd);
+      return positioned ? [positioned] : [];
     })
-    .filter(({ start, due }) => due >= rangeStart && start <= rangeEnd)
-    .sort((left, right) => compareTimelineItems(left.item, right.item, kanbanOrder)), [kanbanOrder, projectItems, rangeEnd, rangeStart, span]);
+    .sort((left, right) => compareTimelineItems(left.item, right.item, kanbanOrder)), [days, kanbanOrder, projectItems, rangeEnd, rangeStart]);
   const displayRows = useMemo<TimelineDisplayRow[]>(() => layoutMode === 'compact'
     ? buildCompactRows(scheduled, kanbanOrder)
     : scheduled.map((entry) => ({ id: entry.item.id, entries: [entry] })), [kanbanOrder, layoutMode, scheduled]);
   const fourWeekBandLayouts = useMemo<TimelineFourWeekBandLayout[]>(() => isFourWeekView ? [0, 14].map((bandStartIndex) => {
-    const bandDays = days.slice(bandStartIndex, bandStartIndex + 14);
-    const bandStart = bandDays[0];
-    const bandEnd = bandDays[bandDays.length - 1];
-    const bandTasks = scheduled
-      .filter(({ start, due }) => due >= bandStart && start <= bandEnd)
-      .map((entry) => ({
-        ...entry,
-        startIndex: Math.max(0, calendarDayDistance(entry.start, bandStart)),
-        endIndex: Math.min(13, calendarDayDistance(entry.due, bandStart)),
-        endClipped: entry.due > bandEnd,
-      }))
+    const bandCalendarDays = calendarDays.slice(bandStartIndex, bandStartIndex + 14);
+    const bandDays = bandCalendarDays.filter((day) => workingDays.includes(day.getDay()));
+    const bandStart = bandCalendarDays[0];
+    const bandEnd = bandCalendarDays[bandCalendarDays.length - 1];
+    const bandTasks = projectItems
+      .flatMap((item) => {
+        const positioned = scheduledTaskForDays(item, bandDays, bandStart, bandEnd);
+        return positioned ? [positioned] : [];
+      })
       .sort((left, right) => compareTimelineItems(left.item, right.item, kanbanOrder));
     const rows = layoutMode === 'compact'
       ? buildCompactRows(bandTasks, kanbanOrder)
       : bandTasks.map((entry) => ({ id: entry.item.id, entries: [entry] }));
     return { id: `four-week-band:${bandStartIndex / 14}`, days: bandDays, scheduled: bandTasks, rows };
-  }) : [], [days, isFourWeekView, kanbanOrder, layoutMode, scheduled]);
+  }) : [], [calendarDays, isFourWeekView, kanbanOrder, layoutMode, projectItems, workingDays]);
   const fourWeekDependencyMeasureKey = `${layoutMode}|${fourWeekBandLayouts.map((band) => `${band.id}:${band.rows.map((row) => `${row.id}:${row.entries.map(({ item }) => `${item.id}[${(item.dependencyIds ?? []).join(',')}]`).join(',')}`).join('|')}`).join('||')}`;
   const fourWeekLocalDependencyIds = new Set(fourWeekBandLayouts.flatMap((band) => {
     const visibleTaskIds = new Set(band.scheduled.map(({ item }) => item.id));
@@ -1093,14 +1199,11 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
     const monthDays = days.slice(segment.startIndex, segment.startIndex + segment.dayCount);
     const monthStart = monthDays[0];
     const monthEnd = monthDays[monthDays.length - 1];
-    const monthTasks = scheduled
-      .filter(({ start, due }) => due >= monthStart && start <= monthEnd)
-      .map((entry) => ({
-        ...entry,
-        startIndex: Math.max(0, calendarDayDistance(entry.start, monthStart)),
-        endIndex: Math.min(segment.dayCount - 1, calendarDayDistance(entry.due, monthStart)),
-        endClipped: entry.due > monthEnd,
-      }))
+    const monthTasks = projectItems
+      .flatMap((item) => {
+        const positioned = scheduledTaskForDays(item, monthDays, monthStart, monthEnd);
+        return positioned ? [positioned] : [];
+      })
       .sort((left, right) => compareTimelineItems(left.item, right.item, kanbanOrder));
     const rows = layoutMode === 'compact'
       ? buildCompactRows(monthTasks, kanbanOrder)
@@ -1688,6 +1791,19 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
     };
   }, [direction, document.items, fourWeekDependencyMeasureKey, fourWeekLocalDependencyKey, isFourWeekView]);
 
+  const handleTimelineWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    const scroller = isFourWeekView || unscheduledCollapsed ? timelineContentRef.current : timelinePlannerRef.current;
+    if (!scroller || scroller.scrollHeight <= scroller.clientHeight) return;
+    const delta = event.deltaMode === 1
+      ? event.deltaY * 24
+      : event.deltaMode === 2 ? event.deltaY * scroller.clientHeight : event.deltaY;
+    const nextScrollTop = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, scroller.scrollTop + delta));
+    if (nextScrollTop === scroller.scrollTop) return;
+    event.preventDefault();
+    scroller.scrollTop = nextScrollTop;
+  };
+
   const ropePath = dependencyRope ? (() => {
     const horizontal = dependencyRope.endX - dependencyRope.startX;
     const distance = Math.hypot(horizontal, dependencyRope.endY - dependencyRope.startY);
@@ -1730,12 +1846,19 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
               <button key={value} className={zoom === value ? 'active' : ''} onClick={() => { setZoom(value); onAction({ type: 'setTimelineZoom', zoom: value }); }}>{t(label)}</button>
             ))}
           </div>
+          <WorkingDaysControl
+            days={workingDays}
+            onChange={(days) => {
+              setWorkingDays(days);
+              onAction({ type: 'setTimelineWorkingDays', days });
+            }}
+          />
           <div className="timeline-controls">
             <button className="icon-button" onClick={() => moveActiveWindow(-1)} aria-label={t('Previous range')}><ChevronLeft size={19} /></button>
             <button onClick={() => setActiveWindowStart(startOfWindow(0, zoom))}>{t('Today')}</button>
             <button className="icon-button" onClick={() => moveActiveWindow(1)} aria-label={t('Next range')}><ChevronRight size={19} /></button>
           </div>
-          <button type="button" className="timeline-add-task-button" onClick={() => createForDay(rangeStart)}><Plus size={18} /> {t('Add task')}</button>
+          <button type="button" className="timeline-add-task-button" onClick={() => createForDay(days[0])}><Plus size={18} /> {t('Add task')}</button>
         </div>
       </div>
 
@@ -1778,7 +1901,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
           className={`timeline-content ${paneResizing ? 'is-pane-resizing' : ''} ${unscheduledCollapsed ? 'unscheduled-collapsed' : ''} ${isFourWeekView ? 'four-week-active' : ''}`}
           style={{ '--timeline-unscheduled-height': `${unscheduledPaneHeight}px` } as CSSProperties}
         >
-          <div className="timeline-planner-sticky">
+          <div ref={timelinePlannerRef} className="timeline-planner-sticky" onWheel={handleTimelineWheel}>
           <div className="timeline-range-label">
             <strong>{rangeStart.toLocaleDateString(locale, { month: 'long', day: 'numeric' })}</strong>
             <span>—</span>
@@ -1799,26 +1922,26 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                     <header>
                       <div><span>{segment.date.getFullYear()}</span><strong>{segment.date.toLocaleDateString(locale, { month: 'long' })}</strong></div>
                       <em>{t(taskCount === 1 ? '{{count}} task' : '{{count}} tasks', { count: taskCount })}</em>
-                      <button onClick={() => createForDay(segment.date)} title={t('Add task in {{month}}', { month: segment.date.toLocaleDateString(locale, { month: 'long', year: 'numeric' }) })}><Plus size={15} />{t('Add task')}</button>
+                      <button onClick={() => createForDay(monthDays[0])} title={t('Add task in {{month}}', { month: segment.date.toLocaleDateString(locale, { month: 'long', year: 'numeric' }) })}><Plus size={15} />{t('Add task')}</button>
                     </header>
                     <div className="timeline-year-days" style={{ gridTemplateColumns: monthGridColumns }}>
-                      {monthDays.map((day) => <div key={iso(day)} data-date={iso(day)} className={`${weekBandClass(day)} ${iso(day) === todayIso ? 'today' : ''} ${day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : ''}`}><span>{day.toLocaleDateString(locale, { weekday: 'narrow' })}</span><strong>{day.getDate()}</strong></div>)}
+                      {monthDays.map((day, index) => <TimelineDayHeader key={iso(day)} day={day} days={monthDays} index={index} todayIso={todayIso} weekday="narrow" />)}
                     </div>
                     <div className="timeline-year-stage">
                       <div className="timeline-drop-layer" style={{ gridTemplateColumns: monthGridColumns }}>
-                        {monthDays.map((day) => <TimelineDayDropZone key={iso(day)} day={day} active={dragOverDate === iso(day)} today={iso(day) === todayIso} weekend={day.getDay() === 0 || day.getDay() === 6} />)}
+                        {monthDays.map((day, index) => <TimelineDayDropZone key={iso(day)} day={day} active={dragOverDate === iso(day)} today={iso(day) === todayIso} weekend={day.getDay() === 0 || day.getDay() === 6} gapBefore={hiddenDaysBefore(monthDays, index) > 0} />)}
                       </div>
                       <div className="timeline-year-rows">
                         {rows.map((row) => (
                           <TimelineDisplayRowView row={row} targeted={row.entries.some((entry) => entry.item.id === reorderTargetId)} key={`${segment.id}:${row.id}`}>
                             <div className="timeline-row-grid" style={{ gridTemplateColumns: monthGridColumns }}>
-                              {monthDays.map((day) => <i key={iso(day)} className={`${weekBandClass(day)} ${iso(day) === todayIso ? 'today-line' : ''} ${day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : ''}`} />)}
+                              {monthDays.map((day) => <TimelineGridGuide key={iso(day)} day={day} todayIso={todayIso} />)}
                               {row.entries.map((entry) => {
                                 const taskProject = projectById.get(entry.item.projectId) ?? project;
                                 const taskColumns = document.modules.kanban.projects[entry.item.projectId]?.columns ?? [];
                                 const column = taskColumns.find((value) => value.id === entry.item.moduleData.kanban.columnId);
-                                const visibleStart = entry.start < rangeStart ? rangeStart : entry.start;
-                                const isPrimarySegment = segment.id === `${visibleStart.getFullYear()}-${visibleStart.getMonth()}`;
+                                const visibleStart = firstVisibleTaskDay(entry, days);
+                                const isPrimarySegment = Boolean(visibleStart && segment.id === `${visibleStart.getFullYear()}-${visibleStart.getMonth()}`);
                                 if (!isPrimarySegment) return <TimelineYearContinuation key={entry.item.id} scheduled={entry} projectColor={taskProject.color} columnColor={column?.color} onOpen={() => onOpenTask(entry.item)} />;
                                 const canReorderTarget = !orderingSource || (entry.item.id !== orderingSource.id && entry.item.projectId === orderingSource.projectId && tasksStartSameDay(entry.item, orderingSource));
                                 return <TimelineTaskBar key={entry.item.id} scheduled={{ ...entry, endClipped: true }} projectColor={taskProject.color} projectName={showAllProjects ? taskProject.name : undefined} columnColor={column?.color} recentlyMoved={recentlyMovedId === entry.item.id} connecting={Boolean(dependencySourceId)} canAcceptDependency={Boolean(dependencySourceId && canConnectTasks(dependencySourceId, entry.item.id))} canReorderTarget={canReorderTarget} reorderDropEnabled={Boolean(orderingSource)} onOpen={() => onOpenTask(entry.item)} onUpdateSubtasks={(subtasks) => onAction({ type: 'updateItem', itemId: entry.item.id, changes: { subtasks } })} />;
@@ -1838,25 +1961,26 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
               {fourWeekBandLayouts.map((band) => {
                 const bandStart = band.days[0];
                 const bandEnd = band.days[band.days.length - 1];
-                const bandGridColumns = 'repeat(14, minmax(0, 1fr))';
-                const bandDependencyLayout = buildFourWeekBandDependencies(band.id, band.rows, fourWeekRowHeights, 14);
+                const bandSpan = band.days.length;
+                const bandGridColumns = `repeat(${bandSpan}, minmax(0, 1fr))`;
+                const bandDependencyLayout = buildFourWeekBandDependencies(band.id, band.rows, fourWeekRowHeights, bandSpan);
                 const bandMarkerId = `timeline-four-week-arrow-${band.id.replace(/[^a-z0-9]/gi, '-')}`;
                 return (
                   <section
                     className={`timeline-chart layout-${layoutMode} ${draggedTaskId ? 'is-dragging' : ''} ${resizingTaskId ? 'is-resizing' : ''}`}
-                    data-day-count="14"
+                    data-day-count={bandSpan}
                     aria-label={`${bandStart.toLocaleDateString(locale)} — ${bandEnd.toLocaleDateString(locale)}`}
-                    style={{ '--timeline-day-count': 14, '--timeline-day-width': '0px' } as CSSProperties}
+                    style={{ '--timeline-day-count': bandSpan, '--timeline-day-width': '0px' } as CSSProperties}
                     key={band.id}
                   >
                     <div className="timeline-calendar-header">
                       <div className="timeline-days" style={{ gridTemplateColumns: bandGridColumns }}>
-                        {band.days.map((day) => <div key={iso(day)} data-date={iso(day)} className={`${weekBandClass(day)} ${iso(day) === todayIso ? 'today' : ''} ${day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : ''}`}><span>{day.toLocaleDateString(locale, { weekday: 'short' })}</span><strong>{day.getDate()}</strong></div>)}
+                        {band.days.map((day, index) => <TimelineDayHeader key={iso(day)} day={day} days={band.days} index={index} todayIso={todayIso} weekday="short" />)}
                       </div>
                     </div>
                     <div className="timeline-stage">
                       <div className="timeline-drop-layer" style={{ gridTemplateColumns: bandGridColumns }}>
-                        {band.days.map((day) => <TimelineDayDropZone key={iso(day)} day={day} active={dragOverDate === iso(day)} today={iso(day) === todayIso} weekend={day.getDay() === 0 || day.getDay() === 6} />)}
+                        {band.days.map((day, index) => <TimelineDayDropZone key={iso(day)} day={day} active={dragOverDate === iso(day)} today={iso(day) === todayIso} weekend={day.getDay() === 0 || day.getDay() === 6} gapBefore={hiddenDaysBefore(band.days, index) > 0} />)}
                       </div>
                       <div
                         className="timeline-rows"
@@ -1873,13 +1997,13 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                             key={`${band.id}:${row.id}`}
                           >
                             <div className="timeline-row-grid" style={{ gridTemplateColumns: bandGridColumns }}>
-                              {band.days.map((day) => <i key={iso(day)} className={`${weekBandClass(day)} ${iso(day) === todayIso ? 'today-line' : ''} ${day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : ''}`} />)}
+                              {band.days.map((day) => <TimelineGridGuide key={iso(day)} day={day} todayIso={todayIso} />)}
                               {row.entries.map((entry) => {
                                 const taskProject = projectById.get(entry.item.projectId) ?? project;
                                 const taskColumns = document.modules.kanban.projects[entry.item.projectId]?.columns ?? [];
                                 const column = taskColumns.find((value) => value.id === entry.item.moduleData.kanban.columnId);
-                                const visibleStart = entry.start < rangeStart ? rangeStart : entry.start;
-                                const isPrimaryBand = visibleStart >= bandStart && visibleStart <= bandEnd;
+                                const visibleStart = firstVisibleTaskDay(entry, days);
+                                const isPrimaryBand = Boolean(visibleStart && visibleStart >= bandStart && visibleStart <= bandEnd);
                                 if (!isPrimaryBand) return <TimelineYearContinuation key={entry.item.id} scheduled={entry} projectColor={taskProject.color} columnColor={column?.color} continuationLabel="Continues from the previous timeline row" onOpen={() => onOpenTask(entry.item)} />;
                                 const canReorderTarget = !orderingSource || (entry.item.id !== orderingSource.id && entry.item.projectId === orderingSource.projectId && tasksStartSameDay(entry.item, orderingSource));
                                 return <TimelineTaskBar key={entry.item.id} scheduled={entry} projectColor={taskProject.color} projectName={showAllProjects ? taskProject.name : undefined} columnColor={column?.color} recentlyMoved={recentlyMovedId === entry.item.id} resizeFromScale={resizeAnimation?.taskId === entry.item.id ? resizeAnimation.fromScale : undefined} resizePreview={resizePreview?.taskId === entry.item.id ? resizePreview : undefined} dependencyHighlight={highlightedDependency?.sourceId === entry.item.id ? 'source' : highlightedDependency?.targetId === entry.item.id ? 'target' : undefined} connecting={Boolean(dependencySourceId)} canAcceptDependency={Boolean(dependencySourceId && canConnectTasks(dependencySourceId, entry.item.id))} canReorderTarget={canReorderTarget} reorderDropEnabled={Boolean(orderingSource)} onOpen={() => onOpenTask(entry.item)} onUpdateSubtasks={(subtasks) => onAction({ type: 'updateItem', itemId: entry.item.id, changes: { subtasks } })} />;
@@ -1887,16 +2011,16 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                             </div>
                           </TimelineDisplayRowView>
                         ))}
-                        {band.scheduled.length === 0 && <div className="timeline-empty"><CalendarRange size={34} /><strong>{t('No scheduled work in this range')}</strong><span>{t('Drag an unscheduled task onto a day or create a new one.')}</span><button className="button button-primary" onClick={() => createForDay(bandStart)}><Sparkles size={17} /> {t('Schedule a task')}</button></div>}
+                        {band.scheduled.length === 0 && <div className="timeline-empty"><CalendarRange size={34} /><strong>{t('No scheduled work in this range')}</strong><span>{t('Drag an unscheduled task onto a day or create a new one.')}</span><button className="button button-primary" onClick={() => createForDay(band.days[0])}><Sparkles size={17} /> {t('Schedule a task')}</button></div>}
                         {bandDependencyLayout.connectors.length > 0 && (
                           <svg
                             className={`timeline-dependencies timeline-four-week-dependencies ${highlightedDependencyId ? 'has-highlighted-dependency' : ''}`}
-                            viewBox={`0 0 1400 ${bandDependencyLayout.height}`}
+                            viewBox={`0 0 ${bandSpan * 100} ${bandDependencyLayout.height}`}
                             preserveAspectRatio="none"
                             aria-label={t('Task dependency connectors')}
                           >
                             <defs><marker id={bandMarkerId} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>
-                            <g transform={direction === 'rtl' ? 'translate(1400 0) scale(-1 1)' : undefined}>
+                            <g transform={direction === 'rtl' ? `translate(${bandSpan * 100} 0) scale(-1 1)` : undefined}>
                               {bandDependencyLayout.connectors.map((connector) => {
                                 const dependencyLabel = t('{{target}} depends on {{source}}', { source: connector.sourceTitle, target: connector.targetTitle });
                                 const cancelLabel = t('Cancel dependency from {{source}} to {{target}}', { source: connector.sourceTitle, target: connector.targetTitle });
@@ -2003,12 +2127,12 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
           <div className={`timeline-chart layout-${layoutMode} ${draggedTaskId ? 'is-dragging' : ''} ${resizingTaskId ? 'is-resizing' : ''}`} data-day-count={span} style={{ '--timeline-day-count': span, '--timeline-day-width': `${dayWidth}px` } as CSSProperties}>
             <div className="timeline-calendar-header">
               <div className="timeline-days" style={{ gridTemplateColumns }}>
-                {days.map((day) => <div key={iso(day)} data-date={iso(day)} className={`${weekBandClass(day)} ${iso(day) === todayIso ? 'today' : ''} ${day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : ''}`}><span>{day.toLocaleDateString(locale, { weekday: 'short' })}</span><strong>{day.getDate()}</strong></div>)}
+                {days.map((day, index) => <TimelineDayHeader key={iso(day)} day={day} days={days} index={index} todayIso={todayIso} weekday="short" />)}
               </div>
             </div>
             <div className="timeline-stage">
               <div className="timeline-drop-layer" style={{ gridTemplateColumns }}>
-                {days.map((day) => <TimelineDayDropZone key={iso(day)} day={day} active={dragOverDate === iso(day)} today={iso(day) === todayIso} weekend={day.getDay() === 0 || day.getDay() === 6} />)}
+                {days.map((day, index) => <TimelineDayDropZone key={iso(day)} day={day} active={dragOverDate === iso(day)} today={iso(day) === todayIso} weekend={day.getDay() === 0 || day.getDay() === 6} gapBefore={hiddenDaysBefore(days, index) > 0} />)}
               </div>
               <div className="timeline-rows" ref={timelineRowsRef}>
                 {displayRows.map((row) => {
@@ -2019,7 +2143,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                       key={row.id}
                     >
                       <div className="timeline-row-grid" style={{ gridTemplateColumns }}>
-                        {days.map((day) => <i key={iso(day)} className={`${weekBandClass(day)} ${iso(day) === todayIso ? 'today-line' : ''} ${day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : ''}`} />)}
+                        {days.map((day) => <TimelineGridGuide key={iso(day)} day={day} todayIso={todayIso} />)}
                         {row.entries.map((entry) => {
                           const taskProject = projectById.get(entry.item.projectId) ?? project;
                           const taskColumns = document.modules.kanban.projects[entry.item.projectId]?.columns ?? [];
@@ -2031,7 +2155,7 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                     </TimelineDisplayRowView>
                   );
                 })}
-                {scheduled.length === 0 && <div className="timeline-empty"><CalendarRange size={34} /><strong>{t('No scheduled work in this range')}</strong><span>{t('Drag an unscheduled task onto a day or create a new one.')}</span><button className="button button-primary" onClick={() => createForDay(rangeStart)}><Sparkles size={17} /> {t('Schedule a task')}</button></div>}
+                {scheduled.length === 0 && <div className="timeline-empty"><CalendarRange size={34} /><strong>{t('No scheduled work in this range')}</strong><span>{t('Drag an unscheduled task onto a day or create a new one.')}</span><button className="button button-primary" onClick={() => createForDay(days[0])}><Sparkles size={17} /> {t('Schedule a task')}</button></div>}
                 {dependencyPaths.length > 0 && (
                   <svg className={`timeline-dependencies ${highlightedDependencyId ? 'has-highlighted-dependency' : ''}`} viewBox={`0 0 ${span * 100} ${timelineRowsHeight}`} preserveAspectRatio="none" aria-label={t('Task dependency connectors')}>
                     <defs><marker id="timeline-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>

@@ -66,6 +66,18 @@ if (!HTMLElement.prototype.scrollIntoView) {
   HTMLElement.prototype.scrollIntoView = vi.fn();
 }
 
+if (!document.elementFromPoint) {
+  document.elementFromPoint = vi.fn(() => document.body);
+}
+
+const emptyRect = (): DOMRect => ({
+  x: 0, y: 0, top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0,
+  toJSON: () => ({}),
+});
+
+if (!Range.prototype.getBoundingClientRect) Range.prototype.getBoundingClientRect = emptyRect;
+if (!Range.prototype.getClientRects) Range.prototype.getClientRects = (() => [] as unknown as DOMRectList);
+
 if (!HTMLElement.prototype.setPointerCapture) {
   HTMLElement.prototype.setPointerCapture = vi.fn();
   HTMLElement.prototype.releasePointerCapture = vi.fn();

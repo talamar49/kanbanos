@@ -14,6 +14,8 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'electron/**/*.test.ts'],
     css: false,
+    // Keep interaction-heavy jsdom suites responsive instead of letting worker contention trip per-test timeouts.
+    maxWorkers: 4,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],

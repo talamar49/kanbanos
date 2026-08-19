@@ -5,6 +5,7 @@ const DARK_PANEL = '#424852';
 const DARK_OVERLAY = '#514c67';
 const DARK_SECTION = '#383e48';
 const DARK_INPUT = '#3d444e';
+const DARK_PROJECT_PROGRESS = DARK_PANEL;
 
 function luminance(color: string) {
   const channels = color.startsWith('#')
@@ -56,6 +57,9 @@ describe('dark theme text contrast', () => {
         <span class="quick-add-label-heading">Labels</span>
         <div class="quick-add-actions"><button>Cancel</button><button class="quick-add-submit">Add task</button></div>
       </div>
+      <div class="project-item" style="background: ${DARK_PANEL}"><small class="project-task-progress">1/2</small></div>
+      <article class="keep-note-card" style="background: ${DARK_PANEL}"><button class="keep-note-open"><span class="keep-note-card-title"><strong>Project insight</strong></span><div class="keep-note-preview"><p>Readable Markdown note</p></div></button></article>
+      <section class="keep-note-dialog" style="background: ${DARK_PANEL}"><header class="keep-editor-header"><input aria-label="Note title" value="Launch plan" /></header><div class="keep-wysiwyg-content"><p>Live formatted note</p></div></section>
       <div class="task-card" style="background: ${DARK_PANEL}"><div class="drag-overlay-hint">Drop to move</div></div>
       <div class="timeline-drag-overlay" style="background: ${DARK_OVERLAY}"><div><span>Drop to update the Kanban order</span></div></div>
       <div class="unscheduled-tasks" style="background: ${DARK_PANEL}">
@@ -98,6 +102,11 @@ describe('dark theme text contrast', () => {
       ['label option', '.label-picker-options strong', DARK_PANEL],
       ['Kanban task composer', '.quick-add > textarea', DARK_INPUT],
       ['Kanban composer label heading', '.quick-add-label-heading', DARK_PANEL],
+      ['project task progress', '.project-task-progress', DARK_PROJECT_PROGRESS],
+      ['note card title', '.keep-note-card-title strong', DARK_PANEL],
+      ['note card preview', '.keep-note-preview p', DARK_PANEL],
+      ['note editor title', '.keep-editor-header input', DARK_PANEL],
+      ['note editor content', '.keep-wysiwyg-content p', DARK_PANEL],
       ['Kanban drag hint', '.drag-overlay-hint', DARK_PANEL],
       ['timeline drag hint', '.timeline-drag-overlay span', DARK_OVERLAY],
       ['unscheduled count', '.unscheduled-tasks > header small', DARK_SECTION],

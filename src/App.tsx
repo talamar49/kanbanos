@@ -29,6 +29,7 @@ type SaveState = 'idle' | 'saving' | 'synced' | 'error' | 'local';
 type Toast = { kind: 'success' | 'error'; message: string };
 
 const AttachmentPreviewModal = lazy(() => import('./components/AttachmentPreviewModal').then((module) => ({ default: module.AttachmentPreviewModal })));
+const NotesView = lazy(() => import('./components/NotesView').then((module) => ({ default: module.NotesView })));
 
 function LoadingScreen() {
   return (
@@ -773,6 +774,15 @@ export default function App() {
           mobile={compactLayout}
           nativeMobile={isNativeMobile()}
         />
+      )}
+      {activeView === 'notes' && (
+        <Suspense fallback={<main className="workspace-main notes-view"><div className="notes-view-loading"><span className="spinner spinner-dark" /> {t('Loading notes…')}</div></main>}>
+          <NotesView
+            document={document}
+            project={activeProject}
+            onAction={applyAction}
+          />
+        </Suspense>
       )}
       {activeView === 'roadmap' && (
         <RoadmapView

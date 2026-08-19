@@ -7,9 +7,10 @@ type Props = {
   project: Project;
   value: ProjectScope;
   onChange: (scope: ProjectScope) => void;
+  content?: 'missions' | 'notes';
 };
 
-export function ProjectScopeSelect({ project, value, onChange }: Props) {
+export function ProjectScopeSelect({ project, value, onChange, content = 'missions' }: Props) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -48,7 +49,7 @@ export function ProjectScopeSelect({ project, value, onChange }: Props) {
         ref={triggerRef}
         type="button"
         className="project-scope-trigger"
-        aria-label={t('Mission scope')}
+        aria-label={t(content === 'notes' ? 'Note scope' : 'Mission scope')}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={menuId}
@@ -65,8 +66,8 @@ export function ProjectScopeSelect({ project, value, onChange }: Props) {
       </button>
 
       {open && (
-        <div id={menuId} className="popover project-scope-menu scale-in" role="listbox" aria-label={t('Mission scope')}>
-          <p>{t('View missions from')}</p>
+        <div id={menuId} className="popover project-scope-menu scale-in" role="listbox" aria-label={t(content === 'notes' ? 'Note scope' : 'Mission scope')}>
+          <p>{t(content === 'notes' ? 'View notes from' : 'View missions from')}</p>
           <button className={value === 'current' ? 'selected' : ''} role="option" aria-selected={value === 'current'} onClick={() => choose('current')}>
             <span className="project-scope-option-icon" style={{ color: project.color, background: `${project.color}18` }}><Folder size={16} /></span>
             <span className="project-scope-option-copy"><strong>{project.name}</strong><small>{t('Current project')}</small></span>

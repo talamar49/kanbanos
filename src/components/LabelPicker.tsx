@@ -10,13 +10,14 @@ type Props = {
   options: LabelUsage[];
   onChange: (labels: string[]) => void;
   className?: string;
+  countType?: 'task' | 'note';
 };
 
 function labelKey(label: string): string {
   return label.trim().toLocaleLowerCase();
 }
 
-export function LabelPicker({ value, options, onChange, className = '' }: Props) {
+export function LabelPicker({ value, options, onChange, className = '', countType = 'task' }: Props) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
@@ -140,7 +141,12 @@ export function LabelPicker({ value, options, onChange, className = '' }: Props)
               >
                 <span className="label-picker-option-icon">{choice.create ? <Plus size={15} /> : <Tag size={15} />}</span>
                 <strong dir="auto">{choice.create ? t('Create “{{name}}”', { name: choice.label }) : choice.label}</strong>
-                {!choice.create && choice.count !== undefined && <small>{t(choice.count === 1 ? '{{count}} task' : '{{count}} tasks', { count: choice.count })}</small>}
+                {!choice.create && choice.count !== undefined && <small>{t(
+                  countType === 'note'
+                    ? choice.count === 1 ? '{{count}} note' : '{{count}} notes'
+                    : choice.count === 1 ? '{{count}} task' : '{{count}} tasks',
+                  { count: choice.count },
+                )}</small>}
                 {!choice.create && <Plus className="label-picker-option-check" size={14} />}
               </button>
             ))}

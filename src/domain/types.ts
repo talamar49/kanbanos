@@ -1,4 +1,4 @@
-export type WorkspaceView = 'board' | 'list' | 'timeline' | 'canvas' | 'roadmap' | 'files';
+export type WorkspaceView = 'board' | 'list' | 'timeline' | 'canvas' | 'notes' | 'roadmap' | 'files';
 
 export type RoadmapHorizon = 'Now' | 'Next' | 'Later';
 export type ProjectScope = 'current' | 'all';
@@ -118,6 +118,22 @@ export type CanvasModule = {
   projects: Record<string, CanvasProject>;
 };
 
+export type ProjectNote = {
+  id: string;
+  projectId: string;
+  title: string;
+  content: string;
+  labels: string[];
+  pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NotesModule = {
+  version: 1;
+  notes: Record<string, ProjectNote>;
+};
+
 export type Priority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
 
 export type Subtask = {
@@ -216,6 +232,7 @@ export type WorkspaceDocument = {
   modules: {
     kanban: KanbanModule;
     canvas: CanvasModule;
+    notes: NotesModule;
     [moduleId: string]: unknown;
   };
   resources: {
@@ -229,6 +246,7 @@ export type WorkspaceDocument = {
     timelineLayout?: TimelineLayout;
     timelineZoom?: TimelineZoom;
     timelineWindowStarts?: Partial<Record<TimelineZoom, string>>;
+    timelineWorkingDays?: number[];
     collapsedKanbanSubtaskItemIds?: string[];
   };
 };
@@ -261,7 +279,11 @@ export type WorkspaceAction =
   | { type: 'setTimelineLayout'; layout: TimelineLayout }
   | { type: 'setTimelineZoom'; zoom: TimelineZoom }
   | { type: 'setTimelineWindowStart'; zoom: TimelineZoom; startDate: string }
+  | { type: 'setTimelineWorkingDays'; days: number[] }
   | { type: 'setKanbanSubtasksCollapsed'; itemId: string; collapsed: boolean }
+  | { type: 'addNote'; note: ProjectNote }
+  | { type: 'updateNote'; noteId: string; changes: Partial<Pick<ProjectNote, 'title' | 'content' | 'labels' | 'pinned'>> }
+  | { type: 'deleteNote'; noteId: string }
   | { type: 'reorderRoadmapColumns'; horizons: RoadmapHorizon[] }
   | { type: 'canvasAddView'; projectId: string; view: CanvasWorkspaceView }
   | { type: 'canvasSelectView'; projectId: string; canvasViewId: string }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   CalendarRange,
@@ -11,7 +11,9 @@ import {
   FolderOpen,
   FileClock,
   LogOut,
+  NotebookPen,
   Paperclip,
+  Pencil,
   PenTool,
   Plus,
   RefreshCw,
@@ -19,6 +21,7 @@ import {
 } from 'lucide-react';
 import kanbanosLogo from '../assets/kanbanos-mascot.png';
 import type { Project, WorkspaceDocument, WorkspaceView } from '../domain/types';
+import { isTaskCompleted } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import type { SyncIssue } from '../sync-status';
 import { KeyboardShortcutsDialog } from './KeyboardShortcutsDialog';
@@ -97,8 +100,16 @@ export function Sidebar({
     return () => window.removeEventListener('keydown', openShortcuts);
   }, []);
 
-  const itemCount = (projectId: string) =>
-    Object.values(document.items).filter((item) => item.projectId === projectId).length;
+  const taskProgressByProject = useMemo(() => {
+    const progress = new Map(document.projects.map((project) => [project.id, { open: 0, total: 0 }]));
+    Object.values(document.items).forEach((item) => {
+      const projectProgress = progress.get(item.projectId);
+      if (!projectProgress) return;
+      projectProgress.total += 1;
+      if (!isTaskCompleted(document, item)) projectProgress.open += 1;
+    });
+    return progress;
+  }, [document]);
   const activeSyncIssue = syncState === 'error' ? syncIssue ?? 'both' : undefined;
   const syncCopy = activeSyncIssue === 'offline'
     ? { title: 'Offline — saved locally', message: 'Online sync is unavailable because you are not connected to the internet. Your work is still saved on this device.' }
@@ -149,6 +160,7 @@ export function Sidebar({
         <button className={`nav-item ${activeView === 'board' || activeView === 'list' ? 'active' : ''}`} onClick={() => { onChangeView('board'); onMobileClose?.(); }}><Columns3 size={17} /><span>{t('Project work')}</span></button>
         <button className={`nav-item ${activeView === 'timeline' ? 'active' : ''}`} onClick={() => { onChangeView('timeline'); onMobileClose?.(); }}><CalendarRange size={17} /><span>{t('Timeline')}</span></button>
         <button className={`nav-item canvas-nav-item ${activeView === 'canvas' ? 'active' : ''}`} onClick={() => { onChangeView('canvas'); onMobileClose?.(); }}><PenTool size={17} /><span>{t('Canvas')}</span></button>
+        <button className={`nav-item ${activeView === 'notes' ? 'active' : ''}`} onClick={() => { onChangeView('notes'); onMobileClose?.(); }}><NotebookPen size={17} /><span>{t('Notes')}</span><em>{Object.keys(document.modules.notes.notes).length}</em></button>
         <button className={`nav-item ${activeView === 'roadmap' ? 'active' : ''}`} onClick={() => { onChangeView('roadmap'); onMobileClose?.(); }}><ChartNoAxesGantt size={17} /><span>{t('Roadmap')}</span></button>
         <button className={`nav-item ${activeView === 'files' ? 'active' : ''}`} onClick={() => { onChangeView('files'); onMobileClose?.(); }}><Paperclip size={17} /><span>{t('Files')}</span><em>{Object.keys(document.resources.attachments).length}</em></button>
       </nav>
@@ -159,41 +171,55 @@ export function Sidebar({
           <button className="icon-button icon-button-small" aria-label={t('Add project')} onClick={onAddProject}><Plus size={15} /></button>
         </div>
         <div className="project-list">
-          {document.projects.filter((project) => !project.archived).map((project) => (
-            <div className="project-list-row" key={project.id}>
-              <button
-                className={`project-item ${activeProject.id === project.id ? 'active' : ''}`}
-                onClick={() => { onSelectProject(project.id); setProjectMenu(null); onMobileClose?.(); }}
-                onDoubleClick={() => onRenameProject(project.id)}
-                title={t('Double-click to rename')}
-              >
-                <span className="project-dot" style={{ background: project.color }} />
-                <span>{project.name}</span>
-                <small>{itemCount(project.id)}</small>
-              </button>
-              <div className="project-menu-host">
+          {document.projects.filter((project) => !project.archived).map((project) => {
+            const progress = taskProgressByProject.get(project.id) ?? { open: 0, total: 0 };
+            const progressLabel = progress.total === 1
+              ? t('{{open}} of {{total}} task open', progress)
+              : t('{{open}} of {{total}} tasks open', progress);
+            const projectMenuOpen = projectMenu?.id === project.id;
+            return (
+              <div className="project-list-row" key={project.id}>
                 <button
-                  className="project-more"
-                  aria-label={t('Options for {{name}}', { name: project.name })}
-                  onClick={(event) => {
-                    const bounds = event.currentTarget.getBoundingClientRect();
-                    setProjectMenu((current) => current?.id === project.id
-                      ? null
-                      : { id: project.id, top: bounds.bottom + 5, left: direction === 'rtl' ? bounds.left : bounds.right - 150 });
-                  }}
-                ><Ellipsis size={16} /></button>
-                {projectMenu?.id === project.id && createPortal(
-                  <div
-                    className="popover project-options-menu project-options-portal scale-in"
-                    style={{ top: projectMenu.top, left: projectMenu.left }}
-                  >
-                    <button onClick={() => { onRenameProject(project.id); setProjectMenu(null); }}>{t('Rename project')}</button>
-                  </div>,
-                  window.document.body,
-                )}
+                  className={`project-item ${activeProject.id === project.id ? 'active' : ''}`}
+                  onClick={() => { onSelectProject(project.id); setProjectMenu(null); onMobileClose?.(); }}
+                  onDoubleClick={() => onRenameProject(project.id)}
+                  title={t('Double-click to rename')}
+                >
+                  <span className="project-dot" style={{ background: project.color }} />
+                  <span>{project.name}</span>
+                  <small
+                    className="project-task-progress"
+                    aria-label={progressLabel}
+                    title={progressLabel}
+                  ><bdi dir="ltr">{progress.open}/{progress.total}</bdi></small>
+                </button>
+                <div className="project-menu-host">
+                  <button
+                    className="project-more"
+                    aria-label={t('Options for {{name}}', { name: project.name })}
+                    aria-haspopup="menu"
+                    aria-expanded={projectMenuOpen}
+                    onClick={(event) => {
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      setProjectMenu((current) => current?.id === project.id
+                        ? null
+                        : { id: project.id, top: bounds.bottom + 5, left: direction === 'rtl' ? bounds.left : bounds.right - 150 });
+                    }}
+                  ><Ellipsis size={17} /></button>
+                  {projectMenuOpen && createPortal(
+                    <div
+                      className="popover project-options-menu project-options-portal scale-in"
+                      style={{ top: projectMenu.top, left: projectMenu.left }}
+                      role="menu"
+                    >
+                      <button role="menuitem" onClick={() => { onRenameProject(project.id); setProjectMenu(null); }}><Pencil size={15} /> {t('Rename project')}</button>
+                    </div>,
+                    window.document.body,
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <button className="new-project-button" onClick={onAddProject}><Plus size={15} /> {t('New project')}</button>
       </nav>
