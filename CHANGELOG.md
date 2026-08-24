@@ -4,6 +4,16 @@ All notable changes to Kanbanos are documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-24
+
+### Improved
+
+- Refined Timeline cards so completed tasks remain visible with struck-through titles, wrapped mobile dates and subtasks stay within compact cards, and startup action hovers remain readable in the soft-dark theme.
+
+### Quality
+
+- Added regression coverage for completed Timeline tasks, compact mobile card bounds, English and Hebrew directionality, light and soft-dark themes, and startup hover contrast.
+
 ## [0.8.0] - 2026-08-19
 
 ### Added
