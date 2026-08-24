@@ -1372,6 +1372,126 @@ describe('timeline, roadmap, canvas, and files', () => {
     expect(onOpenTask).toHaveBeenNthCalledWith(2, unscheduledTask);
   });
 
+  it('keeps completed tasks on the timeline with struck-through titles in every theme and direction', () => {
+    const document = createEmptyWorkspace('Completed timeline tasks');
+    const project = document.projects[0];
+    const sunday = new Date();
+    sunday.setHours(12, 0, 0, 0);
+    sunday.setDate(sunday.getDate() - sunday.getDay());
+    const scheduledDate = `${sunday.getFullYear()}-${String(sunday.getMonth() + 1).padStart(2, '0')}-${String(sunday.getDate()).padStart(2, '0')}`;
+    const completedTask = createWorkItem(project.id, 'done', 'Completed timeline mission', 1000, { startDate: scheduledDate, dueDate: scheduledDate });
+    const activeTask = createWorkItem(project.id, 'planned', 'Active timeline mission', 1001, { startDate: scheduledDate, dueDate: scheduledDate });
+    document.items = { [completedTask.id]: completedTask, [activeTask.id]: activeTask };
+
+    renderWithPreferences(
+      <TimelineView
+        document={document}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        onCreateTask={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+
+    const completedTitle = screen.getByText(completedTask.title);
+    const activeTitle = screen.getByText(activeTask.title);
+    expect(completedTitle).toBeInTheDocument();
+    expect(activeTitle).toBeInTheDocument();
+    expect(completedTitle).toHaveClass('completed');
+    expect(activeTitle).not.toHaveClass('completed');
+
+    const globalStyles = readFileSync('src/styles/global.css', 'utf8');
+    const completedRule = globalStyles.match(/\.timeline-bar-copy strong\.completed \{[^}]+\}/)?.[0];
+    expect(completedRule).toContain('text-decoration: line-through');
+    const style = window.document.createElement('style');
+    style.textContent = completedRule ?? '';
+    window.document.head.append(style);
+    (['light', 'dark'] as const).forEach((theme) => (['ltr', 'rtl'] as const).forEach((direction) => {
+      window.document.documentElement.dataset.theme = theme;
+      window.document.documentElement.dir = direction;
+      expect(window.getComputedStyle(completedTitle).textDecoration, `${theme} ${direction}`).toBe('line-through');
+      expect(window.getComputedStyle(activeTitle).textDecoration, `${theme} ${direction}`).not.toBe('line-through');
+    }));
+    style.remove();
+  });
+
+  it('keeps wrapped mobile timeline dates and subtasks within compact cards', () => {
+    const document = createEmptyWorkspace('Wrapped mobile timeline dates');
+    const project = document.projects[0];
+    const sunday = new Date();
+    sunday.setHours(12, 0, 0, 0);
+    sunday.setDate(sunday.getDate() - sunday.getDay());
+    const monday = new Date(sunday);
+    monday.setDate(monday.getDate() + 1);
+    const tuesday = new Date(sunday);
+    tuesday.setDate(tuesday.getDate() + 2);
+    const wednesday = new Date(sunday);
+    wednesday.setDate(wednesday.getDate() + 3);
+    const localDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const task = createWorkItem(project.id, 'done', 'לעשות הכל להשקיע אבל בזריזות עכשיו', 1000, {
+      startDate: localDate(sunday),
+      dueDate: localDate(monday),
+    });
+    const shortTask = createWorkItem(project.id, 'done', 'Short timeline task', 1001, {
+      startDate: localDate(tuesday),
+      dueDate: localDate(wednesday),
+    });
+    document.items = { [task.id]: task, [shortTask.id]: shortTask };
+    document.preferences.timelineLayout = 'compact';
+
+    renderWithPreferences(
+      <TimelineView
+        document={document}
+        project={project}
+        saveState="idle"
+        dirty={false}
+        mobile
+        onCreateTask={vi.fn()}
+        {...commonViewCallbacks()}
+      />,
+    );
+
+    const slot = window.document.querySelector<HTMLElement>(`[data-timeline-task-id="${task.id}"]`)!;
+    const row = slot.closest<HTMLElement>('.timeline-row')!;
+    const bars = Array.from(row.querySelectorAll<HTMLElement>('.timeline-bar'));
+    const copy = slot.querySelector<HTMLElement>('.timeline-bar-copy')!;
+    const dateLabel = copy.querySelector<HTMLElement>('small')!;
+    const trigger = screen.getByRole('button', { name: `Subtasks: ${task.title}` });
+    expect(slot).not.toHaveClass('single-day');
+    expect(row.querySelectorAll('[data-timeline-task-id]')).toHaveLength(2);
+    expect(dateLabel.textContent).toContain('–');
+
+    const globalStyles = readFileSync('src/styles/global.css', 'utf8');
+    const style = window.document.createElement('style');
+    style.textContent = [
+      globalStyles.match(/(?:^|\n)\.timeline-bar \{[^}]+\}/)?.[0],
+      globalStyles.match(/(?:^|\n)\.timeline-bar-slot:not\(\.single-day\) \.timeline-bar-copy \{[^}]+\}/)?.[0],
+      globalStyles.match(/(?:^|\n)\.timeline-subtask-trigger \{[^}]+\}/)?.[0],
+      globalStyles.match(/(?:^|\n)\.compact-layout \.timeline-subtask-trigger \{[^}]+\}/)?.[0],
+      globalStyles.match(/(?:^|\n)\.compact-layout \.timeline-bar-slot:not\(\.single-day\) \.timeline-bar-copy \{[^}]+\}/)?.[0],
+    ].filter(Boolean).join('\n');
+    window.document.head.append(style);
+    const root = window.document.documentElement;
+    const wasCompact = root.classList.contains('compact-layout');
+    root.classList.add('compact-layout');
+    try {
+      (['light', 'dark'] as const).forEach((theme) => (['ltr', 'rtl'] as const).forEach((direction) => {
+        root.dataset.theme = theme;
+        root.dir = direction;
+        const triggerStyle = window.getComputedStyle(trigger);
+        const copyStyle = window.getComputedStyle(copy);
+        expect(triggerStyle.top, `${theme} ${direction} divider top`).toBe('auto');
+        expect(triggerStyle.bottom, `${theme} ${direction} divider bottom`).toBe('0px');
+        expect(Number.parseFloat(copyStyle.paddingBottom), `${theme} ${direction} reserved date space`).toBeGreaterThanOrEqual(Number.parseFloat(triggerStyle.height));
+        bars.forEach((bar) => expect(window.getComputedStyle(bar).height, `${theme} ${direction} card bounds`).toBe('100%'));
+      }));
+    } finally {
+      if (!wasCompact) root.classList.remove('compact-layout');
+      style.remove();
+    }
+  });
+
   it('starts two-week sprints on the current Sunday and remembers each timeline position', async () => {
     const user = userEvent.setup();
     const document = featureWorkspace();

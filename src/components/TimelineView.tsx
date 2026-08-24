@@ -38,7 +38,7 @@ import {
   X,
 } from 'lucide-react';
 import type { KanbanColumn, Project, ProjectScope, TaskDraft, TimelineLayout, TimelineZoom, WorkItem, WorkspaceAction, WorkspaceDocument } from '../domain/types';
-import { columnForRule, DEFAULT_TIMELINE_WORKING_DAYS, itemsForColumn } from '../domain/workspace';
+import { columnForRule, DEFAULT_TIMELINE_WORKING_DAYS, isTaskCompleted, itemsForColumn } from '../domain/workspace';
 import { useI18n } from '../i18n';
 import { PreferencesControls } from './PreferencesControls';
 import { ProjectScopeSelect } from './ProjectScopeSelect';
@@ -571,6 +571,7 @@ function TimelineTaskBar({
   projectColor,
   projectName,
   columnColor,
+  completed,
   recentlyMoved,
   resizeFromScale,
   resizePreview,
@@ -586,6 +587,7 @@ function TimelineTaskBar({
   projectColor: string;
   projectName?: string;
   columnColor?: string;
+  completed: boolean;
   recentlyMoved: boolean;
   resizeFromScale?: number;
   resizePreview?: ResizePreview;
@@ -740,7 +742,7 @@ function TimelineTaskBar({
         onClick={() => !isDragging && onOpen()}
         title={`${item.title} · ${projectName ? `${projectName} · ` : ''}${dateLabel} · ${t('Drag to reschedule or reorder')}`}
       >
-        <span className="timeline-bar-copy"><strong dir="auto">{item.title}</strong><small dir={projectName ? 'auto' : undefined}><i />{projectName ? `${projectName} · ${dateLabel}` : dateLabel}</small></span>
+        <span className="timeline-bar-copy"><strong className={completed ? 'completed' : undefined} dir="auto">{item.title}</strong><small dir={projectName ? 'auto' : undefined}><i />{projectName ? `${projectName} · ${dateLabel}` : dateLabel}</small></span>
         {(item.dependencyIds?.length ?? 0) > 0 && <span className="timeline-dependency-count" title={t('{{count}} dependencies', { count: item.dependencyIds?.length ?? 0 })}><Workflow size={10} />{item.dependencyIds?.length}</span>}
       </button>
       {canAcceptDependency && <span className="timeline-dependency-card-prompt"><Workflow size={16} />{t(dependencyTarget.isOver ? 'Release to create dependency' : 'Drop here to create dependency')}</span>}
@@ -849,7 +851,7 @@ function TimelineTaskBar({
   );
 }
 
-function TimelineYearContinuation({ scheduled, projectColor, columnColor, continuationLabel = 'Continues from another month', onOpen }: { scheduled: ScheduledTask; projectColor: string; columnColor?: string; continuationLabel?: string; onOpen: () => void }) {
+function TimelineYearContinuation({ scheduled, projectColor, columnColor, completed, continuationLabel = 'Continues from another month', onOpen }: { scheduled: ScheduledTask; projectColor: string; columnColor?: string; completed: boolean; continuationLabel?: string; onOpen: () => void }) {
   const { locale, t } = useI18n();
   const { item, startIndex, endIndex } = scheduled;
   const duration = Math.max(1, endIndex - startIndex + 1);
@@ -867,7 +869,7 @@ function TimelineYearContinuation({ scheduled, projectColor, columnColor, contin
       } as CSSProperties}
     >
       <button className="timeline-bar" onClick={onOpen} title={`${item.title} · ${dateLabel} · ${t(continuationLabel)}`}>
-        <span className="timeline-bar-copy"><strong dir="auto">{item.title}</strong><small><i />{dateLabel}</small></span>
+        <span className="timeline-bar-copy"><strong className={completed ? 'completed' : undefined} dir="auto">{item.title}</strong><small><i />{dateLabel}</small></span>
       </button>
     </div>
   );
@@ -1940,11 +1942,12 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                                 const taskProject = projectById.get(entry.item.projectId) ?? project;
                                 const taskColumns = document.modules.kanban.projects[entry.item.projectId]?.columns ?? [];
                                 const column = taskColumns.find((value) => value.id === entry.item.moduleData.kanban.columnId);
+                                const completed = isTaskCompleted(document, entry.item);
                                 const visibleStart = firstVisibleTaskDay(entry, days);
                                 const isPrimarySegment = Boolean(visibleStart && segment.id === `${visibleStart.getFullYear()}-${visibleStart.getMonth()}`);
-                                if (!isPrimarySegment) return <TimelineYearContinuation key={entry.item.id} scheduled={entry} projectColor={taskProject.color} columnColor={column?.color} onOpen={() => onOpenTask(entry.item)} />;
+                                if (!isPrimarySegment) return <TimelineYearContinuation key={entry.item.id} scheduled={entry} projectColor={taskProject.color} columnColor={column?.color} completed={completed} onOpen={() => onOpenTask(entry.item)} />;
                                 const canReorderTarget = !orderingSource || (entry.item.id !== orderingSource.id && entry.item.projectId === orderingSource.projectId && tasksStartSameDay(entry.item, orderingSource));
-                                return <TimelineTaskBar key={entry.item.id} scheduled={{ ...entry, endClipped: true }} projectColor={taskProject.color} projectName={showAllProjects ? taskProject.name : undefined} columnColor={column?.color} recentlyMoved={recentlyMovedId === entry.item.id} connecting={Boolean(dependencySourceId)} canAcceptDependency={Boolean(dependencySourceId && canConnectTasks(dependencySourceId, entry.item.id))} canReorderTarget={canReorderTarget} reorderDropEnabled={Boolean(orderingSource)} onOpen={() => onOpenTask(entry.item)} onUpdateSubtasks={(subtasks) => onAction({ type: 'updateItem', itemId: entry.item.id, changes: { subtasks } })} />;
+                                return <TimelineTaskBar key={entry.item.id} scheduled={{ ...entry, endClipped: true }} projectColor={taskProject.color} projectName={showAllProjects ? taskProject.name : undefined} columnColor={column?.color} completed={completed} recentlyMoved={recentlyMovedId === entry.item.id} connecting={Boolean(dependencySourceId)} canAcceptDependency={Boolean(dependencySourceId && canConnectTasks(dependencySourceId, entry.item.id))} canReorderTarget={canReorderTarget} reorderDropEnabled={Boolean(orderingSource)} onOpen={() => onOpenTask(entry.item)} onUpdateSubtasks={(subtasks) => onAction({ type: 'updateItem', itemId: entry.item.id, changes: { subtasks } })} />;
                               })}
                             </div>
                           </TimelineDisplayRowView>
@@ -2002,11 +2005,12 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                                 const taskProject = projectById.get(entry.item.projectId) ?? project;
                                 const taskColumns = document.modules.kanban.projects[entry.item.projectId]?.columns ?? [];
                                 const column = taskColumns.find((value) => value.id === entry.item.moduleData.kanban.columnId);
+                                const completed = isTaskCompleted(document, entry.item);
                                 const visibleStart = firstVisibleTaskDay(entry, days);
                                 const isPrimaryBand = Boolean(visibleStart && visibleStart >= bandStart && visibleStart <= bandEnd);
-                                if (!isPrimaryBand) return <TimelineYearContinuation key={entry.item.id} scheduled={entry} projectColor={taskProject.color} columnColor={column?.color} continuationLabel="Continues from the previous timeline row" onOpen={() => onOpenTask(entry.item)} />;
+                                if (!isPrimaryBand) return <TimelineYearContinuation key={entry.item.id} scheduled={entry} projectColor={taskProject.color} columnColor={column?.color} completed={completed} continuationLabel="Continues from the previous timeline row" onOpen={() => onOpenTask(entry.item)} />;
                                 const canReorderTarget = !orderingSource || (entry.item.id !== orderingSource.id && entry.item.projectId === orderingSource.projectId && tasksStartSameDay(entry.item, orderingSource));
-                                return <TimelineTaskBar key={entry.item.id} scheduled={entry} projectColor={taskProject.color} projectName={showAllProjects ? taskProject.name : undefined} columnColor={column?.color} recentlyMoved={recentlyMovedId === entry.item.id} resizeFromScale={resizeAnimation?.taskId === entry.item.id ? resizeAnimation.fromScale : undefined} resizePreview={resizePreview?.taskId === entry.item.id ? resizePreview : undefined} dependencyHighlight={highlightedDependency?.sourceId === entry.item.id ? 'source' : highlightedDependency?.targetId === entry.item.id ? 'target' : undefined} connecting={Boolean(dependencySourceId)} canAcceptDependency={Boolean(dependencySourceId && canConnectTasks(dependencySourceId, entry.item.id))} canReorderTarget={canReorderTarget} reorderDropEnabled={Boolean(orderingSource)} onOpen={() => onOpenTask(entry.item)} onUpdateSubtasks={(subtasks) => onAction({ type: 'updateItem', itemId: entry.item.id, changes: { subtasks } })} />;
+                                return <TimelineTaskBar key={entry.item.id} scheduled={entry} projectColor={taskProject.color} projectName={showAllProjects ? taskProject.name : undefined} columnColor={column?.color} completed={completed} recentlyMoved={recentlyMovedId === entry.item.id} resizeFromScale={resizeAnimation?.taskId === entry.item.id ? resizeAnimation.fromScale : undefined} resizePreview={resizePreview?.taskId === entry.item.id ? resizePreview : undefined} dependencyHighlight={highlightedDependency?.sourceId === entry.item.id ? 'source' : highlightedDependency?.targetId === entry.item.id ? 'target' : undefined} connecting={Boolean(dependencySourceId)} canAcceptDependency={Boolean(dependencySourceId && canConnectTasks(dependencySourceId, entry.item.id))} canReorderTarget={canReorderTarget} reorderDropEnabled={Boolean(orderingSource)} onOpen={() => onOpenTask(entry.item)} onUpdateSubtasks={(subtasks) => onAction({ type: 'updateItem', itemId: entry.item.id, changes: { subtasks } })} />;
                               })}
                             </div>
                           </TimelineDisplayRowView>
@@ -2148,8 +2152,9 @@ export function TimelineView({ document, project, saveState, dirty, onOpenTask, 
                           const taskProject = projectById.get(entry.item.projectId) ?? project;
                           const taskColumns = document.modules.kanban.projects[entry.item.projectId]?.columns ?? [];
                           const column = taskColumns.find((value) => value.id === entry.item.moduleData.kanban.columnId);
+                          const completed = isTaskCompleted(document, entry.item);
                           const canReorderTarget = !orderingSource || (entry.item.id !== orderingSource.id && entry.item.projectId === orderingSource.projectId && tasksStartSameDay(entry.item, orderingSource));
-                          return <TimelineTaskBar key={entry.item.id} scheduled={entry} projectColor={taskProject.color} projectName={showAllProjects ? taskProject.name : undefined} columnColor={column?.color} recentlyMoved={recentlyMovedId === entry.item.id} resizeFromScale={resizeAnimation?.taskId === entry.item.id ? resizeAnimation.fromScale : undefined} resizePreview={resizePreview?.taskId === entry.item.id ? resizePreview : undefined} dependencyHighlight={highlightedDependency?.sourceId === entry.item.id ? 'source' : highlightedDependency?.targetId === entry.item.id ? 'target' : undefined} connecting={Boolean(dependencySourceId)} canAcceptDependency={Boolean(dependencySourceId && canConnectTasks(dependencySourceId, entry.item.id))} canReorderTarget={canReorderTarget} reorderDropEnabled={Boolean(orderingSource)} onOpen={() => onOpenTask(entry.item)} onUpdateSubtasks={(subtasks) => onAction({ type: 'updateItem', itemId: entry.item.id, changes: { subtasks } })} />;
+                          return <TimelineTaskBar key={entry.item.id} scheduled={entry} projectColor={taskProject.color} projectName={showAllProjects ? taskProject.name : undefined} columnColor={column?.color} completed={completed} recentlyMoved={recentlyMovedId === entry.item.id} resizeFromScale={resizeAnimation?.taskId === entry.item.id ? resizeAnimation.fromScale : undefined} resizePreview={resizePreview?.taskId === entry.item.id ? resizePreview : undefined} dependencyHighlight={highlightedDependency?.sourceId === entry.item.id ? 'source' : highlightedDependency?.targetId === entry.item.id ? 'target' : undefined} connecting={Boolean(dependencySourceId)} canAcceptDependency={Boolean(dependencySourceId && canConnectTasks(dependencySourceId, entry.item.id))} canReorderTarget={canReorderTarget} reorderDropEnabled={Boolean(orderingSource)} onOpen={() => onOpenTask(entry.item)} onUpdateSubtasks={(subtasks) => onAction({ type: 'updateItem', itemId: entry.item.id, changes: { subtasks } })} />;
                         })}
                       </div>
                     </TimelineDisplayRowView>

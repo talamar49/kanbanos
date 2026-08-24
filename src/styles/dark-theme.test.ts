@@ -6,6 +6,15 @@ const DARK_OVERLAY = '#514c67';
 const DARK_SECTION = '#383e48';
 const DARK_INPUT = '#3d444e';
 const DARK_PROJECT_PROGRESS = DARK_PANEL;
+const DARK_STARTUP_HOVER = '#4b4762';
+
+function ruleFor(selector: string) {
+  const styles = readFileSync('src/styles/global.css', 'utf8');
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = styles.match(new RegExp(`${escapedSelector} \\{([^}]+)\\}`));
+  expect(match, `${selector} should have a style rule`).not.toBeNull();
+  return match![1];
+}
 
 function luminance(color: string) {
   const channels = color.startsWith('#')
@@ -87,6 +96,14 @@ describe('dark theme text contrast', () => {
   afterEach(() => {
     fixture.remove();
     style.remove();
+  });
+
+  it('keeps startup action hover surfaces dark and readable', () => {
+    const hoverRule = ruleFor("[data-theme='dark'] .startup-actions > button:hover:not(:disabled)");
+
+    expect(hoverRule).toContain(`background: ${DARK_STARTUP_HOVER}`);
+    expect(contrastRatio('#f3f4f7', DARK_STARTUP_HOVER), 'primary text contrast').toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio('#b4bbc6', DARK_STARTUP_HOVER), 'secondary text contrast').toBeGreaterThanOrEqual(4.5);
   });
 
   it.each(['ltr', 'rtl'] as const)('keeps editable, status, and drag text readable in %s layouts', (direction) => {
